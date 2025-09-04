@@ -354,7 +354,7 @@ Download our model following [Model Downloads](#model-downloads)
 create a soft link to the source code directory:
 ```shell
 mkdir inclusionAI 
-ln -s /path/to/inclusionAI/Ming-Lite-Omni-1.5-FP8 inclusionAI/Ming-Lite-Omni-1.5-FP8
+ln -s /path/to/inclusionAI/Ming-lite-omni-1.5-FP8 inclusionAI/Ming-Lite-Omni-1.5-FP8
 ```
 
 
