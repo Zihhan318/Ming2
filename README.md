@@ -405,8 +405,8 @@ def test_image_generate():
 ```
 
 
-     
-```
+
+
 
 ## License and Legal Disclaimer
 
