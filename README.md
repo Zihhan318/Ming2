@@ -398,6 +398,57 @@ python talker/talker_vllm_server.py --model ${MODEL_PATH}/talker --gpu-memory-ut
 ```
 
 
+## Omni SDK
+
+We have unified the addition of VLLM inference acceleration capabilities for multimodal question answering, image generation, speech generation, and other modules in the Omni model. By installing the ming_sdk wheel package and specifying the ming-omni model path, users can easily load the model for VLLM inference.
+
+
+### Install ming_sdk
+```
+pip install inclusionAI/Ming-Lite-Omni-FP8/ming_sdk-1.0.0-py3-none-any.whl
+```
+
+
+### Install dependencies
+
+```
+pip install inclusionAI/Ming-Lite-Omni-FP8/flash_attn-2.7.0.post1%2Bcu12torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+pip install inclusionAI/Ming-Lite-Omni-FP8/vllm-0.8.6.dev1+ga37daf9e9.d20250730-cp310-cp310-linux_x86_64.whl
+
+```
+
+### Inference with the SDK
+
+For more examples, please refer to the official the examples `ming_sdk/ming_test.py`
+
+```
+import torch
+import torchaudio
+import numpy as np
+from ming_sdk.ming import Ming
+
+ming = Ming(
+    model_path=model_path, 
+    driver="0", 
+    talker_with_vllm=True,
+    gpu_memory_utilization = {"moe": 0.5,"talker": 0.2}
+)
+
+# generate audio
+def test_audio_generate():
+    output_audio_path = "test.wav"
+    waveform = ming.generate(
+        text="介绍一下杭州", output_type="speech", max_new_tokens=128
+    )
+    torchaudio.save(output_audio_path, waveform, 24000)
+
+def test_image_generate():
+    image_t2i = ming.generate(text="生成一张图 美女在沙滩上奔跑", output_type="image")
+    image_t2i.save("auto_t2i.jpg")
+```
+
+
+
 
 ### Offline Inference
 

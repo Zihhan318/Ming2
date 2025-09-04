@@ -31,3 +31,8 @@ Session.vim
 __pycache__/
 *.py[cod]
 *$py.class
+
+*.pyc
+build/*
+dist/*
+ming_sdk.egg-info/*

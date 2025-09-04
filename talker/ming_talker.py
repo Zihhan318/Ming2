@@ -140,8 +140,8 @@ class MingTalkerDummyInputsBuilder(BaseDummyInputsBuilder):
     ) -> ProcessorInputs:
         audio_count = mm_counts.get("audio", 0)
         return ProcessorInputs(
-            prompt_text = [0] * 512,
-            mm_data = {"audio": torch.rand((512, 896)).cpu()}
+            prompt_text = [0] * 1,
+            mm_data = {"audio": torch.rand((1, 896)).cpu()}
         )
 
 
@@ -213,8 +213,7 @@ class MingTalkerForCausalLM(nn.Module, SupportsPP, SupportsMultiModal):
             audio = kwargs.get("audio", None)
             if audio is not None:
                 intermediate_tensors = IntermediateTensors({"audio_embeddings": audio})
-                traceback.print_stack()
-            
+                # traceback.print_stack()
             inputs_embeds = self.get_input_embeddings(input_ids)
             input_ids = None
 

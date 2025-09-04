@@ -572,9 +572,9 @@ class BailingMMNativeForConditionalGeneration(PreTrainedModel):
         image_gen_negative_input_ids: Optional[torch.LongTensor] = None,
         image_gen_negative_attention_mask: Optional[torch.Tensor] = None,
         image_gen_steps: Optional[int] = 30,
-        image_gen_seed: Optional[int] = 0,
+        image_gen_seed: Optional[int] = None,
         image_gen_cfg: Optional[float] = 5.0,
-        image_gen_image_cfg: Optional[float] = 1.0,
+        image_gen_image_cfg: Optional[float] = 2.0,
         image_gen_cfg_mode: Optional[int] = 1,
         image_gen_height: Optional[int] = 512,
         image_gen_width: Optional[int] = 512,
@@ -625,6 +625,9 @@ class BailingMMNativeForConditionalGeneration(PreTrainedModel):
 
             closest_size, _ = process_ratio(ori_h=image_gen_height, ori_w=image_gen_width)
             image_gen_height, image_gen_width = closest_size
+
+            if image_gen_seed is None or image_gen_seed < 0:
+                image_gen_seed = np.random.randint(0, 2**16 - 1)
 
             sample_kwargs = {
                 "encoder_hidden_states": condition_embeds,
