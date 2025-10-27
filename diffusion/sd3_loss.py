@@ -108,6 +108,8 @@ class SD3Loss(torch.nn.Module):
             ref_add_noise=False,
             ref_add_noise_ratio=0.25,
             torch_dtype=torch.float32,
+            use_refiner=True,
+            use_qwpe=False,
         ):
         super(SD3Loss, self).__init__()
         #self.torch_type = torch.bfloat16
@@ -146,7 +148,9 @@ class SD3Loss(torch.nn.Module):
         self.train_model.enable_gradient_checkpointing()
         
         self.set_trainable_params(trainable_params)
-
+        
+        self.use_refiner = use_refiner
+        self.use_qwpe = use_qwpe
 
         num_parameters_trainable = 0
         num_parameters = 0
@@ -235,6 +239,8 @@ class SD3Loss(torch.nn.Module):
             ref_x=ref_x,
             ref_add_noise=self.ref_add_noise,
             ref_add_noise_ratio=self.ref_add_noise_ratio,
+            use_refiner=self.use_refiner,
+            use_qwpe=self.use_qwpe,
         ).images[0]
 
         return image  

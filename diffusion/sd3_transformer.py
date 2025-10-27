@@ -18,24 +18,28 @@ import torch.nn as nn
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin, SD3Transformer2DLoadersMixin
-from diffusers.models.attention import FeedForward, JointTransformerBlock
+from diffusers.models.attention import FeedForward #, JointTransformerBlock
 from diffusers.models.attention_processor import (
     Attention,
     AttentionProcessor,
     FusedJointAttnProcessor2_0,
-    JointAttnProcessor2_0,
+    # JointAttnProcessor2_0,
 )
 from diffusers.models.modeling_utils import ModelMixin
-from diffusers.models.normalization import AdaLayerNormContinuous, AdaLayerNormZero
+from diffusers.models.normalization import AdaLayerNormContinuous, AdaLayerNormZero, RMSNorm
 from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
 from diffusers.utils.torch_utils import maybe_allow_in_graph
-from diffusers.models.embeddings import CombinedTimestepTextProjEmbeddings, PatchEmbed
+from diffusers.models.embeddings import CombinedTimestepTextProjEmbeddings, PatchEmbed, get_2d_sincos_pos_embed
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
+
 
 from IPython import embed
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+
+from .mm_rope import OmniGen2RotaryPosEmbed, JointAttnProcessor2_0, JointTransformerBlock, QwenEmbedRope
+import torch.nn.functional as F
 
 @maybe_allow_in_graph
 class SD3SingleTransformerBlock(nn.Module):
@@ -76,7 +80,6 @@ class SD3SingleTransformerBlock(nn.Module):
         hidden_states = hidden_states + ff_output
 
         return hidden_states
-
 
 class SD3Transformer2DModel(
     ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin, SD3Transformer2DLoadersMixin
@@ -138,6 +141,8 @@ class SD3Transformer2DModel(
         ] = (),  # () for sd3.0; (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12) for sd3.5
         qk_norm: Optional[str] = None,
         vae_ref_channel_cat = False,
+        directvlm_attention_dim: int = 2048,
+        rope_max_index=1024,
     ):
         super().__init__()
         self.out_channels = out_channels if out_channels is not None else in_channels
@@ -153,6 +158,7 @@ class SD3Transformer2DModel(
             embed_dim=self.inner_dim,
             pos_embed_max_size=pos_embed_max_size,  # hard-code for now.
         )
+
         self.split_patchfy = True
         if self.split_patchfy:
             self.ref_pos_embed = PatchEmbed(
@@ -162,6 +168,7 @@ class SD3Transformer2DModel(
                 in_channels=in_channels,
                 embed_dim=self.inner_dim,
                 pos_embed_max_size=pos_embed_max_size,  # hard-code for now.
+                #pos_embed_type=pos_embed_type,
             )
             num_refiner_layers = 2
             self.noise_refiner = nn.ModuleList(
@@ -184,12 +191,23 @@ class SD3Transformer2DModel(
                     for i in range(num_refiner_layers)
                 ]
             )
+            # Initialize 3d-rope
+            if True:
+                axes_dim_rope = [20, 22, 22] # sum(axes_dim_rope) == 64 | [8,28,28]
+                assert sum(axes_dim_rope) == attention_head_dim, "sum(axes_dim_rope) must be equal to attention_head_dim"
+                self.rope_embedder = QwenEmbedRope(
+                    theta=10000,
+                    axes_dim=axes_dim_rope,
+                    scale_rope=True,
+                    max_index=rope_max_index,
+                )
         else:
             self.ref_pos_embed = None
         self.time_text_embed = CombinedTimestepTextProjEmbeddings(
             embedding_dim=self.inner_dim, pooled_projection_dim=pooled_projection_dim
         )
         self.context_embedder = nn.Linear(joint_attention_dim, caption_projection_dim)
+        self.rope_embed = QwenEmbedRope(theta=10000, axes_dim=list((8, 28, 28)), scale_rope=True)
 
         self.transformer_blocks = nn.ModuleList(
             [
@@ -363,6 +381,12 @@ class SD3Transformer2DModel(
         return_dict: bool = True,
         skip_layers: Optional[List[int]] = None,
         ref_hidden_states = None,
+        directvlm_hidden_states=None,
+        omitlq=False,
+        use_qwpe=False,
+        use_abspe=False,
+        directvlm_use_norm=True,
+        use_refiner=True,
     ) -> Union[torch.Tensor, Transformer2DModelOutput]:
         """
         The [`SD3Transformer2DModel`] forward method.
@@ -409,32 +433,21 @@ class SD3Transformer2DModel(
 
         height, width = hidden_states.shape[-2:]
 
-        #assert ref_hidden_states is not None
-
-        # if torch.distributed.get_rank() == 0:
-        #     embed()
-        # torch.distributed.barrier()
-        # if ref_hidden_states is not None:
-            
-        #     assert ref_hidden_states.shape == hidden_states.shape
-        #     if self.vae_ref_channel_cat:
-        #         assert ref_hidden_states.ndim == 4
-        #         hidden_states_cat = torch.cat([hidden_states, ref_hidden_states], dim=1)
-        #         hidden_states = self.pos_embed(hidden_states_cat)
-        #     else:
-        #         hidden_states_cat = torch.cat([hidden_states, ref_hidden_states], dim=0)
-        #         hidden_states_cat = self.pos_embed(hidden_states_cat)
-        #         hidden_states, ref_hidden_states = hidden_states_cat.chunk(2, dim=0)
-        #         assert hidden_states.ndim == 3
-        #         hidden_states = torch.cat([hidden_states, ref_hidden_states], dim=1)      
-        # elif self.vae_ref_channel_cat:
-        #     hidden_states_cat = torch.cat([hidden_states, torch.zeros_like(hidden_states)], dim=1)
-        #     hidden_states = self.pos_embed(hidden_states_cat)
-        # else:
-        #     hidden_states = self.pos_embed(hidden_states)
-        #       # takes care of adding positional embeddings too.
-
         temb = self.time_text_embed(timestep, pooled_projections)
+        if directvlm_hidden_states is not None:
+            assert encoder_hidden_states.ndim == 3
+            assert directvlm_hidden_states.ndim == 3
+            assert encoder_hidden_states.shape[-1] == directvlm_hidden_states.shape[-1]
+            assert encoder_hidden_states.shape[0] == directvlm_hidden_states.shape[0], "{} vs {}".format(
+                encoder_hidden_states.shape, directvlm_hidden_states.shape
+            )
+            if omitlq:
+                print("omitlq")
+                encoder_hidden_states = directvlm_hidden_states
+            else:
+                encoder_hidden_states = torch.cat([encoder_hidden_states, directvlm_hidden_states], dim=1)
+
+
         encoder_hidden_states = self.context_embedder(encoder_hidden_states)
 
         if ref_hidden_states is not None:
@@ -446,23 +459,41 @@ class SD3Transformer2DModel(
                 assert hidden_states.ndim == 3
             else:
                 hidden_states = self.pos_embed(hidden_states)
-                for layer in self.noise_refiner:
-                    hidden_states = layer(hidden_states, temb)
+                if use_refiner:
+                    for layer in self.noise_refiner:
+                        hidden_states = layer(hidden_states, temb)
                 ref_hidden_states = self.ref_pos_embed(ref_hidden_states)
-                for layer in self.ref_image_refiner:
-                    ref_hidden_states = layer(ref_hidden_states, temb)
+                if use_refiner:
+                    for layer in self.ref_image_refiner:
+                        ref_hidden_states = layer(ref_hidden_states, temb)
             hidden_states = torch.cat([hidden_states, ref_hidden_states], dim=1)
         else:
             hidden_states = self.pos_embed(hidden_states)
-            for layer in self.noise_refiner:
-                hidden_states = layer(hidden_states, temb)
+            if use_refiner:
+                for layer in self.noise_refiner:
+                    hidden_states = layer(hidden_states, temb)
+
+        if use_qwpe: 
+            video_fhw = [1 if ref_hidden_states is None else 2, height//2, width//2]
+            rotary_emb = self.rope_embedder(
+                video_fhw, 
+                [encoder_hidden_states.shape[1] for _ in range(encoder_hidden_states.shape[0])], 
+                device=encoder_hidden_states.device
+            )
+            rotary_emb = rotary_emb.unsqueeze(0).repeat(hidden_states.shape[0], 1, 1)
+        else:
+            rotary_emb = None
 
         if joint_attention_kwargs is not None and "ip_adapter_image_embeds" in joint_attention_kwargs:
             ip_adapter_image_embeds = joint_attention_kwargs.pop("ip_adapter_image_embeds")
             ip_hidden_states, ip_temb = self.image_proj(ip_adapter_image_embeds, timestep)
 
             joint_attention_kwargs.update(ip_hidden_states=ip_hidden_states, temb=ip_temb)
-
+        
+        if use_qwpe:
+            joint_attention_kwargs = joint_attention_kwargs if joint_attention_kwargs is not None else {}
+            joint_attention_kwargs.update(image_rotary_emb=rotary_emb)
+        
         for index_block, block in enumerate(self.transformer_blocks):
             # Skip specified layers
             is_skip = True if skip_layers is not None and index_block in skip_layers else False

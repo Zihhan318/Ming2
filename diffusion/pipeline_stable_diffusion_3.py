@@ -811,6 +811,12 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
         ref_x=None,
         ref_add_noise=False,
         ref_add_noise_ratio=0.25,
+        directvlm_hidden_states=None,
+        omitlq=False,
+        use_qwpe=False,
+        use_abspe=False,
+        directvlm_use_norm=True,
+        use_refiner=True,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -991,17 +997,25 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
             lora_scale=lora_scale,
         )
 
-        prompt_embeds = prompt_embeds.to(self.transformer.dtype)
-        negative_prompt_embeds = negative_prompt_embeds.to(self.transformer.dtype)
-        pooled_prompt_embeds = pooled_prompt_embeds.to(self.transformer.dtype)
-        negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(self.transformer.dtype)
+        if prompt_embeds is not None:
+            prompt_embeds = prompt_embeds.to(self.transformer.dtype)
+        if negative_prompt_embeds is not None:
+            negative_prompt_embeds = negative_prompt_embeds.to(self.transformer.dtype)
+        if pooled_prompt_embeds is not None:
+            pooled_prompt_embeds = pooled_prompt_embeds.to(self.transformer.dtype)
+        if negative_pooled_prompt_embeds is not None:
+            negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(self.transformer.dtype)
 
         if self.do_classifier_free_guidance:
+            assert skip_guidance_layers is None
             if skip_guidance_layers is not None:
                 original_prompt_embeds = prompt_embeds
                 original_pooled_prompt_embeds = pooled_prompt_embeds
+
             # prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             pooled_prompt_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
+            if directvlm_hidden_states is not None:
+                directvlm_hidden_states = torch.cat([directvlm_hidden_states*0, directvlm_hidden_states], dim=0)
 
         # 4. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels
@@ -1019,6 +1033,9 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
         if ref_x is not None:
             assert ref_x.ndim == 4 and ref_x.shape[0] == 1
             ref_x = ref_x.to(self.vae.dtype).to(device)
+            # if torch.distributed.get_rank() == 0:
+            #     embed()
+            # torch.distributed.barrier()
             ref_x = self.vae.encode(ref_x).latent_dist.mode()
             ref_x = (ref_x - self.vae.config.shift_factor) * self.vae.config.scaling_factor
 
@@ -1115,19 +1132,6 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
 
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latent_model_input.shape[0])
-
-                # pipeline_loop_kwargs = {
-                #     "hidden_states": latent_model_input,
-                #     "timestep": timestep,
-                #     "encoder_hidden_states": txt_batch,
-                #     "joint_attention_kwargs": self.joint_attention_kwargs,
-                #     "return_dict": False,
-                #     "extra_vit_input": extra_vit_input,
-                #     "ref_hidden_states": ref_x_in,
-                # }
-                #if torch.distributed.get_rank() == 0:
-                #torch.save(pipeline_loop_kwargs, "./personal/0710ming_pipeline_loop_kwargs_{}.pth".format(i))
-
                 
                 noise_pred = self.transformer(
                     hidden_states=latent_model_input,
@@ -1138,6 +1142,12 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
                     return_dict=False,
                     extra_vit_input=extra_vit_input,
                     ref_hidden_states=ref_x_in,
+                    directvlm_hidden_states=directvlm_hidden_states,
+                    omitlq=omitlq,
+                    use_qwpe=use_qwpe,
+                    use_abspe=use_abspe,
+                    directvlm_use_norm=directvlm_use_norm,
+                    use_refiner=use_refiner,
                 )[0]
                 
                 # perform guidance
@@ -1158,7 +1168,8 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
                         elif cfg_mode == 3:
                             noise_pred = text_cond + img_cfg * (full_cond - text_cond)  # M3 img
                         elif cfg_mode == 4:
-                            noise_pred = uncond + guidance_scale * (text_cond - uncond)  # M4 txt
+                            # noise_pred = uncond + guidance_scale * (text_cond - uncond)  # M4 txt
+                            noise_pred = uncond + guidance_scale * (text_cond - uncond) + img_cfg * (full_cond - text_cond)
                         elif cfg_mode == 5:
                             noise_pred = img_cond + guidance_scale * (full_cond - img_cond)  # M5 txt
                         elif cfg_mode == 6:
