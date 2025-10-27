@@ -4,22 +4,14 @@
     <img src="https://mdn.alipayobjects.com/huamei_drbxn1/afts/img/YLAgT5MSnLwAAAAAQXAAAAgADkliAQFr/original" width="100"/>
 <p>
 
-<p align="center">📑 <a href="https://arxiv.org/abs/2506.09344">Technical Report</a>｜🤗 <a href="https://huggingface.co/inclusionAI/Ming-flash-omni-Preview">Hugging Face</a>｜ 🤖 <a href="https://www.modelscope.cn/models/inclusionAI/Ming-flash-omni-Preview">ModelScope</a>
+<p align="center">📑 <a href="">Technical Report</a>｜🤗 <a href="https://huggingface.co/inclusionAI/Ming-flash-omni-Preview">Hugging Face</a>｜ 🤖 <a href="https://www.modelscope.cn/models/inclusionAI/Ming-flash-omni-Preview">ModelScope</a>
 
 
 
 ## Introduction
 
-Ming-flash-omni, an upgraded version of [Ming-Omni](https://arxiv.org/abs/2506.09344), built upon a sparser Mixture-of-
-Experts (MoE) variant of [Ling-Flash-2.0](https://github.com/inclusionAI/Ling-V2) with 10B total parameters, of which only 6B
-are active per token. Compared to its predecessor, the upgraded version exhibits
-substantial improvements across multimodal understanding and generation. We significantly advance
-speech recognition capabilities, achieving state-of-the-art performance in both contextual ASR and
-dialect-aware ASR. In image generation, Ming-flash-omni introduces high-fidelity text rendering
-and demonstrates marked gains in scene consistency and identity preservation during image editing.
-Furthermore, Ming-flash-omni introduces generative segmentation, a capability that not only
-achieves strong standalone segmentation performance but also enhances spatial control in image
-generation and improves editing consistency. It demonstrates highly competitive results in various modal benchmarks compared to industry-leading models.
+Ming-flash-omni Preview, an upgraded version of [Ming-Omni](https://arxiv.org/abs/2506.09344), built upon a sparser Mixture-of-Experts (MoE) variant of [Ling-Flash-2.0](https://github.com/inclusionAI/Ling-V2) with 100B total parameters, of which only 6B
+are active per token. Compared to its predecessor, the upgraded version exhibits substantial improvements across multimodal understanding and generation. We significantly advance speech recognition capabilities, achieving state-of-the-art performance in both contextual ASR and dialect-aware ASR. In image generation, Ming-flash-omni Preview introduces high-fidelity text rendering and demonstrates marked gains in scene consistency and identity preservation during image editing. Furthermore, Ming-flash-omni Preview introduces generative segmentation, a capability that not only achieves strong standalone segmentation performance but also enhances spatial control in image generation and improves editing consistency. It demonstrates highly competitive results in various modal benchmarks compared to industry-leading models.
 
 <p align="center">
     <img src="https://mdn.alipayobjects.com/huamei_drbxn1/afts/img/WlRgQa7XRPYAAAAAgBAAAAgADkliAQFr/fmt.avif" width="800"/>
@@ -35,11 +27,10 @@ generation and improves editing consistency. It demonstrates highly competitive 
 
 
 ## Key Features
-Compared to [Ming-lite-omni v1.5](https://github.com/inclusionAI/Ming/tree/v1.5), Ming-flash-omni features key optimizations in the following 3 areas:
-- **Sparse MoE Architecture for Omni-Modality**: With a 100B-A6B MoE backbone (extending Ling-Flash-2.0), a Dual-Balanced Routing Mechanism, combining Auxiliary Load Balancing Loss and Modality-Level Router Bias Update, is employed to ensure uniform expert activation and stable training across all modalities.
-- **Generative Segmentation-as-Editing Paradigm**: Unifies segmentation and editing as a semantics-preserving generation task. Achieves 0.90 on GenEval, surpassing non-RL methods in fine-grained spatial control.
-- **Context-Aware and Dialectal Speech Recognition**: Sets new State-of-the-Art performance across all 12 ContextASR benchmarks. Significantly improved recognition performance for 15 Chinese dialects.
-
+Compared to [Ming-lite-omni v1.5](https://github.com/inclusionAI/Ming/tree/v1.5), Ming-flash-omni Preview features key optimizations in the following 3 areas:
+- **Sparse MoE Architecture for Omni-Modality**: The Sparse MoE Architecture for Omni-Modality features a 100B-A6B MoE backbone (an extension of Ling-Flash-2.0). To ensure uniform expert activation and stable training across all modalities, Ming-flash-omni Preview  employs a Dual-Balanced Routing Mechanism that combines an Auxiliary Load Balancing Loss with a Modality-Level Router Bias Update.
+- **Generative Segmentation-as-Editing Paradigm**: It unifies segmentation and editing into a semantics-preserving generation task, and achieves $0.90$ on GenEval, surpassing non-RL methods in fine-grained spatial control.
+- **Context-Aware and Dialectal Speech Recognition**: Ming-flash-omni Preview sets a new State-of-the-Art performance across all 12 ContextASR benchmarks, and it significantly improves recognition performance for 15 Chinese dialects.
 
 
 
@@ -51,24 +42,26 @@ Compared to [Ming-lite-omni v1.5](https://github.com/inclusionAI/Ming/tree/v1.5)
 ## Use Cases
 
 ### Steaming Video Conversation
-<video src="https://gw.alipayobjects.com/v/huamei_drbxn1/afts/video/n6k6SqtCCqMAAAAAgJAAAAgAfoeUAQBr" controls="controls" width="70%" height="auto" >
-    Steaming Video Conversation
-</video>
+
+
+https://github.com/user-attachments/assets/971ec7da-f2b9-4a07-bc32-61dd80c5c680
+
 
 ### Audio Context ASR & Dialect ASR
-<video src="https://gw.alipayobjects.com/v/huamei_drbxn1/afts/video/Cq6xSqziP_YAAAAAgCAAAAgAfoeUAQBr" controls="controls" width="70%" height="auto" >
-    Audio Context ASR & Dialect ASR
-</video>
+
+https://github.com/user-attachments/assets/86304095-3563-42e1-9aa4-192748172536
+
 
 ### Audio Voice Clone
-<video src="https://gw.alipayobjects.com/v/huamei_drbxn1/afts/video/aMvtSKTM_68AAAAAgCAAAAgAfoeUAQBr" controls="controls" width="70%" height="auto" >
-    Audio Voice Clone
-</video>
+
+https://github.com/user-attachments/assets/408b955d-1baf-44fb-a083-21c98ffe6b4a
+
+
 
 ### Image Generation & Editing
-<video src="https://gw.alipayobjects.com/v/huamei_drbxn1/afts/video/cb4mSp1jTwQAAAAAgIAAAAgAfoeUAQBr" controls="controls" width="70%" height="auto" >
-    Generative Segmentation-as-Editing  
-</video>
+
+https://github.com/user-attachments/assets/71a74740-f4fc-42b8-8873-9e4378bd06bb
+
 
 
 
@@ -93,8 +86,7 @@ modelscope download --model inclusionAI/Ming-flash-omni-Preview --local_dir incl
 Note: This download process will take several minutes to several hours, depending on your network conditions.
 
 ##  Evaluation
-Ming-flash-omni shows competitive performance in vision-text understanding, image generation, audio understanding and text-to-speech capabilities. For detailed evaluation results，please refer to our techinical report.  
-
+Ming-flash-omni Preview shows competitive performance in vision-text understanding, image generation, audio understanding and text-to-speech capabilities. For detailed evaluation results，please refer to our [techinical report]().  
 
 
 ## Environment Preparation
