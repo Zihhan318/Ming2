@@ -14,7 +14,7 @@ Ming-flash-omni Preview, an upgraded version of [Ming-Omni](https://arxiv.org/ab
 are active per token. Compared to its predecessor, the upgraded version exhibits substantial improvements across multimodal understanding and generation. We significantly advance speech recognition capabilities, achieving state-of-the-art performance in both contextual ASR and dialect-aware ASR. In image generation, Ming-flash-omni Preview introduces high-fidelity text rendering and demonstrates marked gains in scene consistency and identity preservation during image editing. Furthermore, Ming-flash-omni Preview introduces generative segmentation, a capability that not only achieves strong standalone segmentation performance but also enhances spatial control in image generation and improves editing consistency. It demonstrates highly competitive results in various modal benchmarks compared to industry-leading models.
 
 <p align="center">
-    <img src="https://mdn.alipayobjects.com/huamei_drbxn1/afts/img/WlRgQa7XRPYAAAAAgBAAAAgADkliAQFr/fmt.avif" width="800"/>
+    <img src="https://mdn.alipayobjects.com/huamei_drbxn1/afts/img/5hflRY595xwAAAAAgBAAAAgADkliAQFr/fmt.avif" width="800"/>
 <p>
 
 ## 📌 Updates
