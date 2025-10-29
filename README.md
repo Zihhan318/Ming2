@@ -19,7 +19,7 @@ are active per token. Compared to its predecessor, the upgraded version exhibits
 
 ## 📌 Updates
 
-* [2025.10.27] 🔥 We release the preview version of Ming-flash-omni：[Ming-flash-omni Preview](https://github.com/inclusionAI/Ming/tree/main).
+* [2025.10.27] 🔥 We release the preview version of Ming-flash-omni：[Ming-flash-omni Preview](https://inclusionai.github.io/blog/ming-flash-omni-preview).
 * [2025.07.15] 🔥 We release [Ming-lite-omni v1.5](https://github.com/inclusionAI/Ming/tree/v1.5) with significant improvements across all modalities.
 * [2025.06.12] 🔥 Our [Technical Report](https://arxiv.org/abs/2506.09344) is in public on arxiv.
 * [2025.05.28] 🔥 The official version of [Ming-lite-omni v1](https://github.com/inclusionAI/Ming/tree/v1.0) is released, with better performance and image generation support.
