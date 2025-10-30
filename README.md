@@ -4,7 +4,7 @@
     <img src="https://mdn.alipayobjects.com/huamei_drbxn1/afts/img/YLAgT5MSnLwAAAAAQXAAAAgADkliAQFr/original" width="100"/>
 <p>
 
-<p align="center">📑 <a href="">Technical Report</a>｜🤗 <a href="https://huggingface.co/inclusionAI/Ming-flash-omni-Preview">Hugging Face</a>｜ 🤖 <a href="https://www.modelscope.cn/models/inclusionAI/Ming-flash-omni-Preview">ModelScope</a>
+<p align="center">📑 <a href="https://arxiv.org/abs/2510.24821">Technical Report</a>｜🤗 <a href="https://huggingface.co/inclusionAI/Ming-flash-omni-Preview">Hugging Face</a>｜ 🤖 <a href="https://www.modelscope.cn/models/inclusionAI/Ming-flash-omni-Preview">ModelScope</a>
 
 
 
@@ -86,7 +86,7 @@ modelscope download --model inclusionAI/Ming-flash-omni-Preview --local_dir incl
 Note: This download process will take several minutes to several hours, depending on your network conditions.
 
 ##  Evaluation
-Ming-flash-omni Preview shows competitive performance in vision-text understanding, image generation, audio understanding and text-to-speech capabilities. For detailed evaluation results，please refer to our [techinical report]().  
+Ming-flash-omni Preview shows competitive performance in vision-text understanding, image generation, audio understanding and text-to-speech capabilities. For detailed evaluation results，please refer to our [techinical report](https://arxiv.org/abs/2510.24821).  
 
 
 ## Environment Preparation
