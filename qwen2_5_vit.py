@@ -145,11 +145,18 @@ class Qwen2_5_VisionRotaryEmbedding(nn.Module):
         super().__init__()
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.theta = theta
+        self.dim = dim
 
     def forward(self, seqlen: int) -> torch.Tensor:
         seq = torch.arange(seqlen, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
         freqs = torch.outer(seq, self.inv_freq)
         return freqs
+
+    def reset_parameters(self):
+        # 重新计算 inv_freq（如果需要动态调整）
+        new_inv_freq = 1.0 / (self.theta ** (torch.arange(0, self.dim, 2, dtype=torch.float) / self.dim))
+        self.inv_freq.copy_(new_inv_freq)
 
 class Qwen2RMSNorm(te.RMSNorm):
     def __init__(self, hidden_size, eps=1e-6):

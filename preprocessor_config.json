@@ -4,9 +4,9 @@
         "AutoFeatureExtractor": "audio_processing_bailingmm2.BailingMM2AudioProcessor",
         "AutoProcessor": "processing_bailingmm2.BailingMM2Processor"
     },
-    "min_pixels": 78400,
-    "max_pixels": 2007040,
-    "patch_size": 14,
+    "min_pixels": 4096,
+    "max_pixels": 16777216,
+    "patch_size": 16,
     "temporal_patch_size": 2,
     "merge_size": 2,
     "image_mean": [
@@ -21,6 +21,7 @@
     ],
     "image_token": "<image>",
     "video_token": "<video>",
+    "use_interleaved_frame_timestamp": true,
     "image_processor_type": "BailingMM2ImageProcessor",
     "feature_extractor_type": "BailingMM2AudioProcessor",
     "audio_token": "<audio>",

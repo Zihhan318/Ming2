@@ -28,7 +28,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
-import transformer_engine.pytorch as te
+# import transformer_engine.pytorch as te
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import (
@@ -124,6 +124,9 @@ class BailingMoeV2RMSNorm(nn.Module):
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
         return self.weight * hidden_states.to(input_dtype)
 
+    def reset_parameters(self):
+        nn.init.ones_(self.weight)  # 显式重置 for enabling fsdp
+
 
 ALL_LAYERNORM_LAYERS.append(BailingMoeV2RMSNorm)
 
@@ -162,6 +165,10 @@ class BailingMoeV2RotaryEmbedding(nn.Module):
             sin = emb.sin() * self.attention_scaling
 
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+
+    def reset_parameters(self) -> None:
+        new_inv_freq, self.attention_scaling = self.rope_init_fn(self.config, None)
+        self.inv_freq.copy_(new_inv_freq)
     
     
 class BailingMoeV2RotaryEmbedding3D(nn.Module):
@@ -179,6 +186,7 @@ class BailingMoeV2RotaryEmbedding3D(nn.Module):
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
+        self.config = config
 
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
@@ -201,6 +209,10 @@ class BailingMoeV2RotaryEmbedding3D(nn.Module):
             sin = emb.sin() * self.attention_scaling
 
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+
+    def reset_parameters(self) -> None:
+        new_inv_freq, self.attention_scaling = self.rope_init_fn(self.config, None)
+        self.inv_freq.copy_(new_inv_freq)
 
 
 # Copied from transformers.models.llama.modeling_llama.rotate_half
@@ -307,6 +319,7 @@ def get_t_scale_rope_index(
     attention_mask: Optional[torch.Tensor] = None,
     scale_factor: float = 1.0,
     second_per_grid_ts: Optional[torch.Tensor] = None,
+    use_interleaved_frame_timestamp: Optional = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     spatial_merge_size = config.spatial_merge_size
     image_token_id = config.image_patch_token
@@ -314,6 +327,7 @@ def get_t_scale_rope_index(
     image_start_token_id = config.image_start_token
     video_start_token_id = config.video_start_token
     use_abs_time_pos = second_per_grid_ts is not None
+
 
     mrope_position_deltas = []
     if image_grid_thw is not None or video_grid_thw is not None:
@@ -328,6 +342,12 @@ def get_t_scale_rope_index(
             device=input_ids.device,
         )
 
+        if video_grid_thw is not None and use_interleaved_frame_timestamp:
+            video_grid_thw = torch.repeat_interleave(
+                video_grid_thw, video_grid_thw[:, 0], dim=0
+            )
+            video_grid_thw[:, 0] = 1
+
         image_index, video_index = 0, 0
         attention_mask = attention_mask.to(total_input_ids.device)
 
@@ -340,9 +360,18 @@ def get_t_scale_rope_index(
                 vision_tokens = input_ids[vision_start_indices + 1]
                 image_nums = (vision_tokens == image_token_id).sum()
             if video_grid_thw is not None:
-                vision_start_indices = torch.argwhere(input_ids == video_start_token_id).squeeze(1)
-                vision_tokens = input_ids[vision_start_indices + 1]
-                video_nums = (vision_tokens == video_token_id).sum()
+                if use_interleaved_frame_timestamp:
+                    vision_start_indices = torch.argwhere(
+                        input_ids == image_start_token_id
+                    ).squeeze(1)
+                    vision_tokens = input_ids[vision_start_indices + 1]
+                    video_nums = (vision_tokens == video_token_id).sum()
+                else:
+                    vision_start_indices = torch.argwhere(
+                        input_ids == video_start_token_id
+                    ).squeeze(1)
+                    vision_tokens = input_ids[vision_start_indices + 1]
+                    video_nums = (vision_tokens == video_token_id).sum()
 
             input_tokens = input_ids.tolist()
             llm_pos_ids_list: list = []
@@ -451,6 +480,7 @@ def get_rope_index(
     video_grid_thw: Optional[torch.LongTensor] = None,
     attention_mask: Optional[torch.Tensor] = None,
     second_per_grid_ts: Optional[torch.Tensor] = None,
+    use_interleaved_frame_timestamp: Optional = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Calculate the 3D rope index based on image and video's temporal, height and width in LLM.
@@ -525,6 +555,13 @@ def get_rope_index(
                 dtype=input_ids.dtype,
                 device=input_ids.device,
             )
+
+            if video_grid_thw is not None and use_interleaved_frame_timestamp:
+                video_grid_thw = torch.repeat_interleave(
+                    video_grid_thw, video_grid_thw[:, 0], dim=0
+                )
+                video_grid_thw[:, 0] = 1
+
             image_index, video_index = 0, 0
             attention_mask = attention_mask.to(total_input_ids.device)
             for i, input_ids in enumerate(total_input_ids):
@@ -535,9 +572,18 @@ def get_rope_index(
                     vision_tokens = input_ids[vision_start_indices + 1]
                     image_nums = (vision_tokens == image_token_id).sum()
                 if video_grid_thw is not None:
-                    vision_start_indices = torch.argwhere(input_ids == video_start_token_id).squeeze(1)
-                    vision_tokens = input_ids[vision_start_indices + 1]
-                    video_nums = (vision_tokens == video_token_id).sum()
+                    if use_interleaved_frame_timestamp:
+                        vision_start_indices = torch.argwhere(
+                            input_ids == image_start_token_id
+                        ).squeeze(1)
+                        vision_tokens = input_ids[vision_start_indices + 1]
+                        video_nums = (vision_tokens == video_token_id).sum()
+                    else:
+                        vision_start_indices = torch.argwhere(
+                            input_ids == video_start_token_id
+                        ).squeeze(1)
+                        vision_tokens = input_ids[vision_start_indices + 1]
+                        video_nums = (vision_tokens == video_token_id).sum()
 
                 input_tokens = input_ids.tolist()
                 llm_pos_ids_list: list = []
@@ -899,6 +945,7 @@ class BailingMoeV2Attention(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         if "padding_mask" in kwargs:
@@ -947,7 +994,7 @@ class BailingMoeV2Attention(nn.Module):
         )
         
         if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
@@ -955,18 +1002,19 @@ class BailingMoeV2Attention(nn.Module):
 
         attn_weights = torch.matmul(query_states / math.sqrt(self.head_dim), key_states.transpose(2, 3))
 
-        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
-            raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
-                f" {attn_weights.size()}"
-            )
+        # if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+        #     raise ValueError(
+        #         f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
+        #         f" {attn_weights.size()}"
+        #     )
 
-        if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                )
-            attn_weights = attn_weights + attention_mask
+        if attention_mask is not None: # no matter the length, we just slice it
+            # if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+            #     raise ValueError(
+            #         f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+            #     )
+            causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+            attn_weights = attn_weights + causal_mask
 
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
@@ -1019,6 +1067,7 @@ class BailingMoeV2FlashAttention2(BailingMoeV2Attention):
         output_attentions: bool = False,
         use_cache: bool = False,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         # BailingMoeV2FlashAttention2 attention does not support output_attentions
@@ -1057,9 +1106,9 @@ class BailingMoeV2FlashAttention2(BailingMoeV2Attention):
         query_states = self.q_norm(query_states)
         key_states = self.k_norm(key_states)
 
-        kv_seq_len = key_states.shape[-2]
-        if past_key_value is not None:
-            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+        # kv_seq_len = key_states.shape[-2]
+        # if past_key_value is not None:
+        #     kv_seq_len += past_key_value.get_seq_length(layer_idx=self.layer_idx)
         cos, sin = position_embeddings
         if self.config.rope_scaling is not None:
             rope_type = self.config.rope_scaling.get("rope_type", self.config.rope_scaling.get("type"))
@@ -1074,7 +1123,7 @@ class BailingMoeV2FlashAttention2(BailingMoeV2Attention):
         )
 
         if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         # TODO: These transpose are quite inefficient but Flash Attention requires the layout [batch_size, sequence_length, num_heads, head_dim]. We would need to refactor the KV cache
@@ -1254,6 +1303,7 @@ class BailingMoeV2DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
+        cache_position: Optional[torch.LongTensor] = None,
         image_mask: Optional[torch.Tensor] = None,
         audio_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
@@ -1283,6 +1333,11 @@ class BailingMoeV2DecoderLayer(nn.Module):
             use_cache (`bool`, *optional*):
                 If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
                 (see `past_key_values`).
+            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence.
+            position_embeddings (`tuple[torch.FloatTensor, torch.FloatTensor]`, *optional*):
+                Tuple containing the cosine and sine positional embeddings of shape `(batch_size, seq_len, head_dim)`,
+                with `head_dim` being the embedding dimension of each attention head.
         """
         if "padding_mask" in kwargs:
             warnings.warn(
@@ -1300,6 +1355,7 @@ class BailingMoeV2DecoderLayer(nn.Module):
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             position_embeddings=position_embeddings,
+            cache_position=cache_position,
             use_cache=use_cache,
         )
         hidden_states = residual + hidden_states
@@ -1556,6 +1612,7 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
         image_grid_thw: Optional[torch.Tensor] = None,
         image_grid_thw_video: Optional[torch.Tensor] = None, 
         use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         output_router_logits: Optional[bool] = None,
@@ -1617,19 +1674,18 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
                 )
                 use_cache = False
 
-        past_key_values_length = 0
+        # if use_cache and past_key_values is None:
+        #     past_key_values = DynamicCache()
         if use_cache:
             use_legacy_cache = not isinstance(past_key_values, Cache)
             if use_legacy_cache:
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            past_key_values_length = past_key_values.get_usable_length(seq_length)
-
-        if position_ids is None:
-            device = input_ids.device if input_ids is not None else inputs_embeds.device
-            position_ids = torch.arange(
-                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
+            
+        if cache_position is None:
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            cache_position: torch.Tensor = torch.arange(
+                past_seen_tokens, past_seen_tokens + input_ids.shape[1], device=input_ids.device
             )
-            position_ids = position_ids.unsqueeze(0)
 
         if self.rotary_emb.rope_type == "video_rope" and input_ids.size(1) != 1:
             position_ids, rope_deltas = get_t_scale_rope_index(
@@ -1640,6 +1696,7 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
                 attention_mask,
                 scale_factor=2.0,
                 second_per_grid_ts=second_per_grid_ts,
+                use_interleaved_frame_timestamp=self.config.use_interleaved_frame_timestamp,
             )
             self.rope_deltas = rope_deltas
         elif self.rotary_emb.rope_type == "3D" and input_ids.size(1) != 1:
@@ -1650,40 +1707,47 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
                 image_grid_thw_video,
                 attention_mask,
                 second_per_grid_ts,
+                use_interleaved_frame_timestamp=self.config.use_interleaved_frame_timestamp,
             )
             self.rope_deltas = rope_deltas
         elif self.rotary_emb.rope_type == "3D" or self.rotary_emb.rope_type == "video_rope": # decode stage
             batch_size, seq_length = input_ids.shape
-            if past_key_values and self.rope_deltas:
-                delta = past_key_values[0][1].shape[2] + self.rope_deltas
-            elif past_key_values:
-                delta = torch.tensor(past_key_values[0][1].shape[2])
+            if cache_position is not None:
+                delta = (cache_position[0] + self.rope_deltas).to(input_ids.device)
             else:
-                delta = torch.tensor(0)
-            delta = delta.to(input_ids.device)
+                delta = torch.tensor(0).to(input_ids.device)
             position_ids = torch.arange(seq_length, device=input_ids.device)
-            position_ids = position_ids.view(1, -1).expand(batch_size, -1)
-            position_ids = position_ids.add(delta)
-            position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+            position_ids = position_ids.view(1, 1, -1).expand(3, batch_size, -1)
+            # delta = (past_key_values_length + self.rope_deltas).to(input_ids.device)
+            delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=1)
+            position_ids = position_ids + delta.to(position_ids.device)
 
         inputs_embeds = embeddings
-        if self._use_flash_attention_2:
-            # 2d mask is passed through the layers
-            attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
-        elif self._use_sdpa and not output_attentions:
-            # output_attentions=True can not be supported when using SDPA, and we fall back on
-            # the manual implementation that requires a 4D causal mask in all cases.
-            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-            )
-        else:
-            # 4d mask is passed through the layers
-            attention_mask = _prepare_4d_causal_attention_mask(
-                attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
-            )
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
+
+        
+        
+        causal_mask = self._update_causal_mask(
+            attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
+        )
+        # if self._use_flash_attention_2:
+        #     # 2d mask is passed through the layers
+        #     attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
+        # elif self._use_sdpa and not output_attentions:
+        #     # output_attentions=True can not be supported when using SDPA, and we fall back on
+        #     # the manual implementation that requires a 4D causal mask in all cases.
+        #     attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+        #         attention_mask,
+        #         (batch_size, seq_length),
+        #         inputs_embeds,
+        #         past_key_values_length,
+        #     )
+        # else:
+        #     # 4d mask is passed through the layers
+        #     attention_mask = _prepare_4d_causal_attention_mask(
+        #         attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
+        #     )
 
         # embed positions
         hidden_states = inputs_embeds
@@ -1705,7 +1769,7 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
-                    attention_mask,
+                    causal_mask,
                     position_ids,
                     image_mask,
                     audio_mask,
@@ -1714,11 +1778,12 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
                     output_router_logits,
                     use_cache,
                     position_embeddings,
+                    cache_position,
                 )
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,
-                    attention_mask=attention_mask,
+                    attention_mask=causal_mask,
                     position_ids=position_ids,
                     image_mask=image_mask,
                     audio_mask=audio_mask,
@@ -1727,6 +1792,7 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
                     output_router_logits=output_router_logits,
                     use_cache=use_cache,
                     position_embeddings=position_embeddings,
+                    cache_position=cache_position,
                 )
             hidden_states = layer_outputs[0]
 
@@ -1746,6 +1812,7 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
             all_hidden_states += (hidden_states,)
 
         next_cache = None
+        # use_legacy_cache = False
         if use_cache:
             next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
         if not return_dict:
@@ -1761,6 +1828,151 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
             attentions=all_self_attns,
             router_logits=all_router_logits,
         )
+
+    # Copied from transformers.models.phimoe.modeling_phimoe.PhimoeModel._update_causal_mask with Phimoe->BailingMoeV2
+    def _update_causal_mask(
+        self,
+        attention_mask: Union[torch.Tensor],
+        input_tensor: torch.Tensor,
+        cache_position: torch.Tensor,
+        past_key_values: Cache,
+        output_attentions: bool = False,
+    ):
+        if self.config._attn_implementation == "flash_attention_2":
+            if attention_mask is not None and past_key_values is not None:
+                is_padding_right = attention_mask[:, -1].sum().item() != input_tensor.size()[0]
+                if is_padding_right:
+                    raise ValueError(
+                        "You are attempting to perform batched generation with padding_side='right'"
+                        " this may lead to unexpected behaviour for Flash Attention version of BailingV2Moe. Make sure to "
+                        " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
+                    )
+            if attention_mask is not None and 0.0 in attention_mask:
+                return attention_mask
+            return None
+        # For SDPA, when possible, we will rely on its `is_causal` argument instead of its `attn_mask` argument, in
+        # order to dispatch on Flash Attention 2. This feature is not compatible with static cache, as SDPA will fail
+        # to infer the attention mask.
+        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+        using_static_cache = isinstance(past_key_values, StaticCache)
+        # When output attentions is True, sdpa implementation's forward method calls the eager implementation's forward
+        if self.config._attn_implementation == "sdpa" and not using_static_cache and not output_attentions:
+            if AttentionMaskConverter._ignore_causal_mask_sdpa(
+                attention_mask,
+                inputs_embeds=input_tensor,
+                past_key_values_length=past_seen_tokens,
+                sliding_window=None,
+                is_training=self.training,
+            ):
+                return None
+        dtype = input_tensor.dtype
+        min_dtype = torch.finfo(dtype).min
+        sequence_length = input_tensor.shape[1]
+        # StaticCache
+        if using_static_cache:
+            target_length = past_key_values.get_max_cache_shape()
+        # DynamicCache or no cache
+        else:
+            target_length = (
+                attention_mask.shape[-1]
+                if isinstance(attention_mask, torch.Tensor)
+                else past_seen_tokens + sequence_length + 1
+            )
+        # In case the provided `attention` mask is 2D, we generate a causal mask here (4D).
+        causal_mask = self._prepare_4d_causal_attention_mask_with_cache_position(
+            attention_mask,
+            sequence_length=sequence_length,
+            target_length=target_length,
+            dtype=dtype,
+            cache_position=cache_position,
+            batch_size=input_tensor.shape[0],
+            config=self.config,
+            past_key_values=past_key_values,
+        )
+        if (
+            self.config._attn_implementation == "sdpa"
+            and attention_mask is not None
+            and attention_mask.device.type in ["cuda", "xpu", "npu"]
+            and not output_attentions
+        ):
+            # Attend to all tokens in fully masked rows in the causal_mask, for example the relevant first rows when
+            # using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path.
+            # Details: https://github.com/pytorch/pytorch/issues/110213
+            causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
+        return causal_mask
+
+    @staticmethod
+    # Copied from transformers.models.phimoe.modeling_phimoe.PhimoeModel._prepare_4d_causal_attention_mask_with_cache_position with Phimoe->BailingV2Moe
+    def _prepare_4d_causal_attention_mask_with_cache_position(
+        attention_mask: torch.Tensor,
+        sequence_length: int,
+        target_length: int,
+        dtype: torch.dtype,
+        cache_position: torch.Tensor,
+        batch_size: int,
+        config: BailingMoeV2Config,
+        past_key_values: Cache,
+    ):
+        """
+        Creates a causal 4D mask of shape `(batch_size, 1, query_length, key_value_length)` from a 2D mask of shape
+        `(batch_size, key_value_length)`, or if the input `attention_mask` is already 4D, do nothing.
+        Args:
+            attention_mask (`torch.Tensor`):
+                A 2D attention mask of shape `(batch_size, key_value_length)` or a 4D attention mask of shape `(batch_size, 1, query_length, key_value_length)`.
+            sequence_length (`int`):
+                The sequence length being processed.
+            target_length (`int`):
+                The target length: when generating with static cache, the mask should be as long as the static cache, to account for the 0 padding, the part of the cache that is not filled yet.
+            dtype (`torch.dtype`):
+                The dtype to use for the 4D attention mask.
+            cache_position (`torch.Tensor`):
+                Indices depicting the position of the input sequence tokens in the sequence.
+            batch_size (`torch.Tensor`):
+                Batch size.
+            config (`BailingV2MoeConfig`):
+                The model's configuration class
+            past_key_values (`Cache`):
+                The cache class that is being used currently to generate
+        """
+        if attention_mask is not None and attention_mask.dim() == 4:
+            # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
+            causal_mask = attention_mask
+        else:
+            min_dtype = torch.finfo(dtype).min
+            causal_mask = torch.full(
+                (sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=cache_position.device
+            )
+            diagonal_attend_mask = torch.arange(target_length, device=cache_position.device) > cache_position.reshape(
+                -1, 1
+            )
+            text_config = config.get_text_config()
+            if (
+                getattr(text_config, "use_sliding_window", True)
+                and getattr(text_config, "sliding_window", None) is not None
+            ):
+                # if we have sliding window, we should not attend to tokens beyond sliding window length, so we mask them out also
+                # the check is needed to verify is current checkpoint was trained with sliding window or not
+                is_static_sliding_cache = isinstance(past_key_values, StaticCache) and all(past_key_values.is_sliding)
+                if not is_static_sliding_cache or sequence_length > target_length:
+                    sliding_attend_mask = torch.arange(target_length, device=cache_position.device) <= (
+                        cache_position.reshape(-1, 1) - text_config.sliding_window
+                    )
+                    diagonal_attend_mask.bitwise_or_(sliding_attend_mask)
+            causal_mask *= diagonal_attend_mask
+            causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
+            if attention_mask is not None:
+                causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
+                if attention_mask.shape[-1] > target_length:
+                    attention_mask = attention_mask[:, :target_length]
+                mask_length = attention_mask.shape[-1]
+                padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :].to(
+                    causal_mask.device
+                )
+                padding_mask = padding_mask == 0
+                causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
+                    padding_mask, min_dtype
+                )
+        return causal_mask
 
 
 class BailingMoeV2ForCausalLM(BailingMoeV2PreTrainedModel, GenerationMixin):
@@ -1811,6 +2023,7 @@ class BailingMoeV2ForCausalLM(BailingMoeV2PreTrainedModel, GenerationMixin):
         image_grid_thw_video: Optional[torch.Tensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         output_router_logits: Optional[bool] = None,
@@ -1869,6 +2082,7 @@ class BailingMoeV2ForCausalLM(BailingMoeV2PreTrainedModel, GenerationMixin):
             image_grid_thw=image_grid_thw,
             image_grid_thw_video=image_grid_thw_video,
             use_cache=use_cache,
+            cache_position=cache_position,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             output_router_logits=output_router_logits,
@@ -1941,12 +2155,17 @@ class BailingMoeV2ForCausalLM(BailingMoeV2PreTrainedModel, GenerationMixin):
         if past_key_values is not None:
             if isinstance(past_key_values, Cache):
                 cache_length = past_key_values.get_seq_length()
-                past_length = past_key_values.seen_tokens
-                max_cache_length = (
-                    past_key_values.get_max_length()
-                    if hasattr(past_key_values, "get_max_length")
-                    else past_key_values.get_max_cache_shape()
-                )
+                past_length = cache_length
+                # 获取最大缓存长度（DynamicCache 使用 max_cache_len 属性）
+                if hasattr(past_key_values, "max_cache_len") and past_key_values.max_cache_len is not None:
+                    max_cache_length = past_key_values.max_cache_len
+                else:
+                    # 兼容其他 Cache 子类（如 StaticCache）
+                    max_cache_length = (
+                        past_key_values.get_max_length()
+                        if hasattr(past_key_values, "get_max_length")
+                        else getattr(past_key_values, "get_max_cache_shape", lambda: None)()
+                    )
             else:
                 cache_length = past_length = past_key_values[0][0].shape[2]
                 max_cache_length = None

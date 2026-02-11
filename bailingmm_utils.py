@@ -1,45 +1,32 @@
-from __future__ import annotations
-
 import base64
 import logging
 import math
 import os
-import sys
-import time
-import warnings
-from functools import lru_cache
 from io import BytesIO
-from collections import Counter
+from tqdm.contrib.concurrent import thread_map
 
-import random
 import numpy as np
 
 import requests
 import torch
-import torchvision
-from packaging import version
 
 from PIL import Image
 import torchaudio
-from torchvision import io, transforms
-from torchvision.transforms import InterpolationMode
 from typing import Union, Tuple, List
+
+VIDEO_FETCH_VERSION = os.environ.get("VIDEO_FETCH_VERSION", "v1")
+if VIDEO_FETCH_VERSION == "v1":
+    from bailingmm_utils_video import v1_fetch_video as fetch_video
+else:
+    from bailingmm_utils_video import v2_fetch_video as fetch_video
+from bailingmm_utils_video import VideoInput
 
 logger = logging.getLogger(__name__)
 
-IMAGE_FACTOR = 28
-MIN_PIXELS = 4 * 28 * 28
-MAX_PIXELS = 1024 * 28 * 28
+IMAGE_FACTOR = 32
+MIN_PIXELS = 4 * 32 * 32
+MAX_PIXELS = 16384 * 32 * 32
 MAX_RATIO = 200
-
-VIDEO_MIN_PIXELS = 128 * 28 * 28
-VIDEO_MAX_PIXELS = 768 * 28 * 28  # 4: 3 => 32: 24 (768) | 16:9 => 32:18 (576)
-VIDEO_TOTAL_PIXELS = 96 * 128 * 28 * 28  # 9216: 24-72 frames | 7680: 10-60 frames | 6144: 8-48 frames
-
-FRAME_FACTOR = 2
-FPS = 2.0
-FPS_MIN_FRAMES = 4
-FPS_MAX_FRAMES = 128
 
 VideoInput = Union[
     List["Image.Image"],
@@ -52,10 +39,6 @@ VideoInput = Union[
     List[List["torch.Tensor"]],
 ]
 
-
-def is_decord_available() -> bool:
-    import importlib.util
-    return importlib.util.find_spec("decord") is not None
 
 def round_by_factor(number: int, factor: int) -> int:
     """Returns the closest integer to 'number' that is divisible by 'factor'."""
@@ -164,272 +147,30 @@ def fetch_image(ele: dict[str, str | Image.Image], size_factor: int = IMAGE_FACT
 
     return image
 
-def sample_frames(num_frames, total_frames, sample="random"):
-    if sample == "sequence":
-        frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+def fetch_image_wo_resize(ele: dict[str, str | Image.Image], size_factor: int = IMAGE_FACTOR) -> Image.Image:
+    if "image" in ele:
+        image = ele["image"]
     else:
-        intervals = np.linspace(start=0, stop=total_frames, num=num_frames + 1, dtype=int)
-        ranges = []
-        for idx, interv in enumerate(intervals[:-1]):
-            ranges.append((interv, intervals[idx + 1] - 1))
-        if sample == "random":
-            try:
-                frame_indices = [random.choice(range(x[0], x[1])) for x in ranges]
-            except:
-                frame_indices = np.random.permutation(total_frames)[:num_frames]
-                frame_indices.sort()
-                frame_indices = list(frame_indices)
-            if len(frame_indices) < num_frames:
-                padded_frame_indices = [frame_indices[-1]] * num_frames
-                padded_frame_indices[:len(frame_indices)] = frame_indices
-                frame_indices = padded_frame_indices
-        elif sample == "uniform":
-            frame_indices = [(x[0] + x[1]) // 2 for x in ranges]
-            if len(frame_indices) < num_frames:
-                frame_indices = [
-                    frame_indices[int((num_frames - 1) * i / (num_frames - 1) + 0.5)] for i in range(num_frames)
-                ]
-        else:
-            raise NotImplementedError
-    return frame_indices
-
-def get_frames(
-    ele: dict,
-    total_frames: int,
-) -> int:
-    """calculate the number of frames for video used for model inputs.
-        Args:
-        ele (dict): a dict contains the configuration of video.
-        total_frames (int): the original total number of frames of the video.
-    Returns:
-        int: the number of frames for video used for model inputs.
-    """
-    if "nframes" in ele:
-        num_frames = round_by_factor(ele["nframes"], FRAME_FACTOR)
+        image = ele["image_url"]
+    image_obj = None
+    if isinstance(image, Image.Image):
+        image_obj = image
+    elif image.startswith("http://") or image.startswith("https://"):
+        image_obj = Image.open(requests.get(image, stream=True).raw)
+    elif image.startswith("file://"):
+        image_obj = Image.open(image[7:])
+    elif image.startswith("data:image"):
+        if "base64," in image:
+            _, base64_data = image.split("base64,", 1)
+            data = base64.b64decode(base64_data)
+            image_obj = Image.open(BytesIO(data))
     else:
-        min_frames = ceil_by_factor(ele.get("min_frames", FPS_MIN_FRAMES), FRAME_FACTOR)
-        max_frames = floor_by_factor(ele.get("max_frames", min(FPS_MAX_FRAMES, total_frames)), FRAME_FACTOR)
-        num_frames = max(min(total_frames, max_frames), min_frames)
-        num_frames = floor_by_factor(num_frames, FRAME_FACTOR)
+        image_obj = Image.open(image)
+    if image_obj is None:
+        raise ValueError(f"Unrecognized image input, support local path, http url, base64 and PIL.Image, got {image}")
+    image = image_obj.convert("RGB")
 
-    if not (FRAME_FACTOR <= num_frames <= total_frames):
-        raise ValueError(f"nframes should in interval [{FRAME_FACTOR}, {total_frames}], but got {num_frames}.")
-    return num_frames
-
-def _read_video_torchvision(
-    ele: dict,
-) -> (torch.Tensor, float):
-    """read video using torchvision.io.read_video
-    Args:
-        ele (dict): a dict contains the configuration of video.
-        support keys:
-            - video: the path of video. support "file://", "http://", "https://" and local path.
-            - video_start: the start time of video.
-            - video_end: the end time of video.
-    Returns:
-        torch.Tensor: the video tensor with shape (T, C, H, W).
-    """
-    video_path = ele["video"]
-    if version.parse(torchvision.__version__) < version.parse("0.19.0"):
-        if "http://" in video_path or "https://" in video_path:
-            warnings.warn("torchvision < 0.19.0 does not support http/https video path, please upgrade to 0.19.0.")
-        if "file://" in video_path:
-            video_path = video_path[7:]
-
-    sample_method = ele.get("sample", "sequence")
-    pts_unit = "sec" if sample_method == "sequence" else "pts"
-    st = time.time()
-    video, audio, info = io.read_video(
-        video_path,
-        start_pts=ele.get("video_start", 0.0),
-        end_pts=ele.get("video_end", None),
-        pts_unit=pts_unit,
-        output_format="TCHW",
-    )
-    total_frames, video_fps = video.size(0), info["video_fps"]
-    logger.info(f"torchvision:  {video_path=}, {total_frames=}, {video_fps=}, time={time.time() - st:.3f}s")
-
-    max_video_fps = ele.get("max_video_fps", 2.0)
-
-    if video_fps > max_video_fps and total_frames / float(video_fps) > 4.0:
-        num_frames = get_frames(ele, int(total_frames / float(video_fps) * max_video_fps))
-    else:
-        num_frames = get_frames(ele, total_frames)
-
-    # num_frames = get_frames(ele, total_frames)
-
-    frame_indices = sample_frames(
-        num_frames=num_frames, total_frames=total_frames, sample=sample_method
-    )
-    video = video[frame_indices]
-    sample_fps = num_frames / max(total_frames, 1e-6) * video_fps
-    return video, sample_fps
-
-def _read_video_decord(
-    ele: dict,
-) -> (torch.Tensor, float):
-    """read video using decord.VideoReader
-
-    Args:
-        ele (dict): a dict contains the configuration of video.
-        support keys:
-            - video: the path of video. support "file://", "http://", "https://" and local path.
-            - video_start: the start time of video.
-            - video_end: the end time of video.
-    Returns:
-        torch.Tensor: the video tensor with shape (T, C, H, W).
-    """
-    import decord
-    video_path = ele["video"]
-
-    st = time.time()
-    vr = decord.VideoReader(video_path)
-    if 'video_start' in ele or 'video_end' in ele:
-        raise NotImplementedError("not support start_pts and end_pts in decord for now.")
-    total_frames, video_fps = len(vr), vr.get_avg_fps()
-    logger.info(f"decord:  {video_path=}, {total_frames=}, {video_fps=}, time={time.time() - st:.3f}s")
-
-    sample_method = ele.get("sample", "sequence")
-    max_video_fps = ele.get("max_video_fps", 2.0)
-
-    if video_fps > max_video_fps and total_frames / float(video_fps) > 4.0:
-        num_frames = get_frames(ele, int(total_frames / float(video_fps) * max_video_fps))
-    else:
-        num_frames = get_frames(ele, total_frames)
-    frame_indices = sample_frames(
-        num_frames=num_frames, total_frames=total_frames, sample=sample_method
-    )
-
-    video = vr.get_batch(frame_indices).asnumpy()
-    video = torch.tensor(video).permute(0, 3, 1, 2)  # Convert to TCHW format
-    sample_fps = num_frames / max(total_frames, 1e-6) * video_fps
-    return video, sample_fps
-
-VIDEO_READER_BACKENDS = {
-    "decord": _read_video_decord,
-    "torchvision": _read_video_torchvision,
-}
-
-FORCE_BAILINGNATIVE_VIDEO_READER = os.getenv("FORCE_BAILINGNATIVE_VIDEO_READER", None)
-
-@lru_cache(maxsize=1)
-def get_video_reader_backend() -> str:
-    if FORCE_BAILINGNATIVE_VIDEO_READER is not None:
-        video_reader_backend = FORCE_BAILINGNATIVE_VIDEO_READER
-    elif is_decord_available():
-        video_reader_backend = "decord"
-    else:
-        video_reader_backend = "torchvision"
-    print(f"bailing-native-utils using {video_reader_backend} to read video.", file=sys.stderr)
-    return video_reader_backend
-
-def fetch_video(ele: dict, image_factor: int = IMAGE_FACTOR, return_video_sample_fps: bool = False) -> torch.Tensor | \
-                                                                                                       list[
-                                                                                                           Image.Image]:
-    if isinstance(ele["video"], str):
-        if ele["video"].startswith("file://"):
-            ele["video"] = ele["video"][7:]
-        video_reader_backend = get_video_reader_backend()
-        try:
-            video, sample_fps = VIDEO_READER_BACKENDS[video_reader_backend](ele)
-        except Exception as e:
-            logger.warning(f"video_reader_backend {video_reader_backend} error, use torchvision as default, msg: {e}")
-            video, sample_fps = VIDEO_READER_BACKENDS["torchvision"](ele)
-
-        if "resized_height" in ele and "resized_width" in ele:
-            resized_height, resized_width = smart_resize(
-                ele["resized_height"],
-                ele["resized_width"],
-                factor=image_factor,
-            )
-        else:
-            num_frames, _, height, width = video.shape
-            min_pixels = ele.get("min_pixels", VIDEO_MIN_PIXELS)
-            total_pixels = ele.get("total_pixels", VIDEO_TOTAL_PIXELS)
-            # max_pixels = max(min(VIDEO_MAX_PIXELS, total_pixels / num_frames * FRAME_FACTOR), int(min_pixels * 1.05))
-            max_pixels = max(total_pixels / num_frames * FRAME_FACTOR, int(min_pixels * 1.05))
-
-            resized_height, resized_width = smart_resize(
-                height,
-                width,
-                factor=28,
-                min_pixels=min_pixels,
-                max_pixels=max_pixels,
-            )
-    else:
-        assert isinstance(ele["video"], (list, tuple))
-        process_info = ele.copy()
-        process_info.pop("type", None)
-        process_info.pop("video", None)
-        total_frames=len(ele['video'])
-        sample_method = ele.get("sample", "sequence")
-        sample_fps = process_info.pop("max_video_fps", 2.0)
- 
-        video = [
-            torch.from_numpy(np.array(Image.open(video_element).convert("RGB")))
-            for video_element in ele["video"]
-        ]
-        
-        num_frames = get_frames(ele, total_frames)
-        frame_indices = sample_frames(
-            num_frames=num_frames, total_frames=total_frames, sample=sample_method
-        )
-
-        if "resized_height" in ele and "resized_width" in ele:
-            resized_height, resized_width = smart_resize(
-                ele["resized_height"],
-                ele["resized_width"],
-                factor=image_factor,
-            )
-        else:
-            height, width, _ = video[1].shape
-            min_pixels = ele.get("min_pixels", VIDEO_MIN_PIXELS)
-            total_pixels = ele.get("total_pixels", VIDEO_TOTAL_PIXELS)
-            # max_pixels = max(min(VIDEO_MAX_PIXELS, total_pixels / num_frames * FRAME_FACTOR), int(min_pixels * 1.05))
-            max_pixels = max(total_pixels / num_frames * FRAME_FACTOR, int(min_pixels * 1.05))
-
-            resized_height, resized_width = smart_resize(
-                height,
-                width,
-                factor=28,
-                min_pixels=min_pixels,
-                max_pixels=max_pixels,
-            )
-        # 3) gather shapes of the sampled frames
-        shapes = [ video[i].shape[:2] for i in frame_indices ]  # list of (H,W)
-        # pick the shape that occurs most often
-        
-        major_shape, _ = Counter(shapes).most_common(1)[0]
-        major_h, major_w = major_shape
-
-        # VNIAH could have one outlier shape
-        for idx in frame_indices:
-            h, w = video[idx].shape[:2]
-            if (h, w) != (major_h, major_w):
-                # re-open, resize via PIL + TF, then to tensor
-                img = Image.open(ele["video"][idx]).convert("RGB")
-                img = transforms.functional.resize(
-                    img,
-                    [major_h, major_w],
-                    interpolation=InterpolationMode.BICUBIC,
-                    antialias=True,
-                )
-                arr = np.array(img)
-                video[idx] = torch.from_numpy(arr)
-
-        video = torch.stack(video, dim=0)
-        video = video.permute(0, 3, 1, 2).float()
-    logger.info("video-in:  num_frames={}, resized_height={}, resized_width={}".format(video.shape[0],resized_height,resized_width))
-    video = video.cuda()
-    video = transforms.functional.resize(
-        video,
-        [resized_height, resized_width],
-        interpolation=InterpolationMode.BILINEAR,
-    )
-    video = video.cpu()
-    if return_video_sample_fps:
-        return video, sample_fps
-    return video
+    return image
 
 def fetch_audio(ele: dict[str, str | torch.Tensor], return_tensor="pt") -> Tuple[Union[torch.Tensor, np.ndarray], int]:
     if "audio" in ele:
@@ -472,6 +213,45 @@ def extract_vision_info(conversations: list[dict] | list[list[dict]]) -> list[di
                         vision_infos.append(ele)
     return vision_infos
 
+
+def process_reference_vision_info(
+    conversations: list[dict] | list[list[dict]],
+) -> list[Image.Image] | None:
+    vision_infos = extract_vision_info(conversations)
+    ## Read images
+    image_inputs = []
+
+    def inner_process_func(vision_info):
+        if "image" in vision_info or "image_url" in vision_info:
+            res_list = []
+            if "image" in vision_info and isinstance(vision_info["image"], (tuple, list)):
+                for i in range(len(vision_info["image"])):
+                    res_list.append(fetch_image_wo_resize({"type": "image", "image": vision_info["image"][i]}))
+            elif "image_url" in vision_info and vision_info["image_url"].get("url", None) is not None:
+                vision_info["image_url"] = vision_info["image_url"].get("url")
+                res_list.extend([fetch_image_wo_resize(vision_info)])
+            else:
+                res_list.extend([fetch_image_wo_resize(vision_info)])
+            return {'image_inputs':res_list}
+        else:
+            return None
+
+    vision_infos_reslist = thread_map(inner_process_func, vision_infos, disable=True)
+    for res in vision_infos_reslist:
+        if res is None:
+            raise ValueError("image, image_url, video, video_url, audio or audio_url should in content.")
+        elif 'image_inputs' in res:
+            image_inputs.extend(res['image_inputs'])
+
+    if len(image_inputs) > 1: # 当前的多图输入逻辑，只保留第一张作为vae参考
+        image_inputs = [image_inputs[0]]
+
+    if len(image_inputs) == 0:
+        image_inputs = None
+
+    return image_inputs
+
+
 def process_vision_info(
     conversations: list[dict] | list[list[dict]],
 ) -> tuple[list[Image.Image] | None, list[torch.Tensor | list[Image.Image]] | None, list[
@@ -481,16 +261,20 @@ def process_vision_info(
     image_inputs = []
     video_inputs = []
     audio_inputs = []
-    for vision_info in vision_infos:
+
+    def inner_process_func(vision_info):
         if "image" in vision_info or "image_url" in vision_info:
+            res_list = []
             if "image" in vision_info and isinstance(vision_info["image"], (tuple, list)):
                 for i in range(len(vision_info["image"])):
-                    image_inputs.append(fetch_image({"type": "image", "image": vision_info["image"][i]}))
+                    res_list.append(fetch_image({"type": "image", "image": vision_info["image"][i]}))
             elif "image_url" in vision_info and vision_info["image_url"].get("url", None) is not None:
                 vision_info["image_url"] = vision_info["image_url"].get("url")
-                image_inputs.append(fetch_image(vision_info))
+                res_list.extend([fetch_image(vision_info)])
             else:
-                image_inputs.append(fetch_image(vision_info))
+                res_list.extend([fetch_image(vision_info)])
+            return {'image_inputs':res_list}
+
         elif "video" in vision_info or "video_url" in vision_info:
             if "video_url" in vision_info and vision_info["video_url"].get("url", None) is not None:
                 data_value = vision_info["video_url"].get("url")
@@ -499,17 +283,30 @@ def process_vision_info(
             else:
                 data_value = [os.path.join(vision_info['video'], frame) for frame in sorted(os.listdir(vision_info['video']))]
             vision_info['video']=data_value
-            video_inputs.append(fetch_video(vision_info))
+            return {"video_inputs": [fetch_video(vision_info, return_metadata=True)]}
+
         elif "audio" in vision_info or "audio_url" in vision_info:
             if "audio" in vision_info and isinstance(vision_info["audio"], (tuple, list)):
-                audio_inputs.extend(fetch_audio(info) for info in vision_info["audio"])
+                return {"audio_inputs":[fetch_audio(info) for info in vision_info["audio"]]}
             elif "audio_url" in vision_info and vision_info["audio_url"].get("url", None) is not None:
                 vision_info["audio_url"] = vision_info["audio_url"].get("url")
-                audio_inputs.append(fetch_audio(vision_info))
+                return {"audio_inputs":[fetch_audio(vision_info)]}
             else:
-                audio_inputs.append(fetch_audio(vision_info))
+                return {"audio_inputs":[fetch_audio(vision_info)]}
         else:
+            return None
+
+    vision_infos_reslist = thread_map(inner_process_func, vision_infos, disable=True)
+    for res in vision_infos_reslist:
+        if res is None:
             raise ValueError("image, image_url, video, video_url, audio or audio_url should in content.")
+        elif 'image_inputs' in res:
+            image_inputs.extend(res['image_inputs'])
+        elif 'video_inputs' in res:
+            video_inputs.extend(res['video_inputs'])
+        elif 'audio_inputs' in res:
+            audio_inputs.extend(res['audio_inputs'])
+
     if len(image_inputs) == 0:
         image_inputs = None
     if len(video_inputs) == 0:
@@ -518,11 +315,13 @@ def process_vision_info(
         audio_inputs = None
     return image_inputs, video_inputs, audio_inputs
 
+
 def get_closest_ratio(height: float, width: float, aspect_ratios: dict):
     aspect_ratio = height / width
     closest_ratio = min(aspect_ratios.keys(), key=lambda ratio: abs(float(ratio) - aspect_ratio))
     return aspect_ratios[closest_ratio], float(closest_ratio)
-def process_ratio(ori_h, ori_w, highres=False):
+
+def process_ratio(ori_h, ori_w, highres=512):
     ASPECT_RATIO_512 = {
         "0.25": [256, 1024],
         "0.26": [256, 992],
@@ -613,14 +412,18 @@ def process_ratio(ori_h, ori_w, highres=False):
 
     assert len(ASPECT_RATIO_512) == len(ASPECT_RATIO_1024)
 
-    aspect_ratio = ASPECT_RATIO_512
-    if highres is False:
-        aspect_ratio = ASPECT_RATIO_512
-    elif highres == 672:
-        aspect_ratio = ASPECT_RATIO_672
-    else:
-        aspect_ratio = ASPECT_RATIO_1024
+    aspect_ratio_dict = {
+        512 : ASPECT_RATIO_512,
+        672 : ASPECT_RATIO_672,
+        1024 : ASPECT_RATIO_1024,
+    }
 
+    if highres is None or highres is False:
+        highres = 512
+    elif highres is True:
+        highres = 1024
+
+    aspect_ratio = aspect_ratio_dict[min([i for i in aspect_ratio_dict], key=lambda x: abs(x - highres))]
 
     closest_size, _ = get_closest_ratio(ori_h, ori_w, aspect_ratios=aspect_ratio)
     closest_size = list(map(lambda x: int(x), closest_size))
@@ -629,3 +432,87 @@ def process_ratio(ori_h, ori_w, highres=False):
     else:
         resize_size = int(ori_h * closest_size[1] / ori_w), closest_size[1]
     return closest_size, resize_size
+
+
+def find_first_index_of_consecutive_ones(lst):
+    """
+    输入一个由0和1组成的列表，返回每个连续1片段的第一个1的索引。
+    
+    参数:
+        lst (list): 元素为0或1的列表
+    
+    返回:
+        list: 每个连续1片段的首个1的索引列表
+    """
+    result = []
+    i = 0
+    n = len(lst)
+    
+    while i < n:
+        if lst[i] == 1:
+            # 找到一个连续1片段的开始
+            result.append(i)
+            # 跳过整个连续的1片段
+            while i < n and lst[i] == 1:
+                i += 1
+        else:
+            i += 1
+    
+    return result
+
+def merge_consecutive_ones(lst, n):
+    """
+    输入一个由0和1组成的列表，将每个连续的1片段（长度 >= 1）中每n个1合并为一个1，
+    要求每个连续1片段的长度必须能被n整除。
+    保持0和1的相对顺序。
+    
+    参数:
+        lst: list, 元素为0或1
+        n: int, 合并的单位大小（正整数）
+    
+    返回:
+        list: 合并后的列表
+    """
+    assert isinstance(lst, list), "输入必须是列表"
+    assert isinstance(n, int) and n > 0, "n必须是正整数"
+    
+    # 遍历列表，提取连续1的段，检查每段长度是否能被n整除
+    i = 0
+    while i < len(lst):
+        if lst[i] == 1:
+            count = 0
+            start = i
+            # 统计连续1的个数
+            while i < len(lst) and lst[i] == 1:
+                count += 1
+                i += 1
+            # 断言：连续1的个数必须能被n整除
+            assert count % n == 0, f"连续1的片段从索引{start}开始，长度为{count}，不能被n={n}整除"
+        else:
+            i += 1
+
+    # 通过分组合并生成新列表
+    result = []
+    i = 0
+    while i < len(lst):
+        if lst[i] == 0:
+            result.append(0)
+            i += 1
+        else:
+            # 处理连续的1
+            count = 0
+            while i < len(lst) and lst[i] == 1:
+                count += 1
+                i += 1
+            # 每n个1合并为一个1
+            result.extend([1] * (count // n))
+    
+    return result
+
+def get_default_image_gen_hw(image_gen_highres, image_gen_aspect_ratio):
+    if image_gen_aspect_ratio is None:
+        image_gen_aspect_ratio = 1.0
+
+    closest_size, _ = process_ratio(ori_h=512, ori_w=int(512.0 * image_gen_aspect_ratio), highres=image_gen_highres)
+    h, w = closest_size
+    return h, w

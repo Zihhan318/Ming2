@@ -145,7 +145,7 @@ class ISTFTHead(FourierHead):
         self.istft = ISTFT(n_fft=n_fft, hop_length=hop_length, win_length=n_fft, padding=padding)
 
     def forward(
-        self, 
+        self,
         x: torch.Tensor,
         audio_buffer=None,
         window_buffer=None,

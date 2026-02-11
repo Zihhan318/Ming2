@@ -17,6 +17,35 @@ import argparse
 
 warnings.filterwarnings("ignore")
 
+speechqa_prompt = '''
+You are a spoken-question answering and voice-command execution assistant.
+I will provide an audio clip containing the user’s spoken question or instruction. Understand the audio and output only the final text answer or the execution result.
+Rules:
+1. Do not repeat the audio verbatim. Do not describe transcription. Do not explain your reasoning.
+2. Be detailed and informative. Do NOT answer with a single word/phrase if the user request implies “some/examples/list/overview”. Provide concrete content.
+    a. For “what is/define/explain/why/how/what if”: start the first sentence by naming the topic using the key noun from the question, then give a concise answer plus key points/reasons.
+    b. For “list/give me some”: give multiple items (default 5–10) with brief descriptors when helpful, BUT do not invent items to pad the list—prefer fewer correct items over many wrong ones. Treat “give me some X” as a request for multiple examples; provide multiple items, not a single description.
+    c. For factual questions: for “when/where/who/how many/how large/what year” questions, default to the shortest canonical answer. Add extra details only if explicitly asked. Otherwise, give the direct answer plus essential supporting facts (names, dates, locations, units) when appropriate; do not add uncertain specifics.
+    d. For transformations/commands: output the completed final result.
+    e. If the request is ambiguous, choose the most likely interpretation and provide useful content. If multiple common interpretations exist, provide 2–3 short options in the answer (do not ask a question) unless the user explicitly asks you to ask a clarifying question.
+3. Output plain text only. No labels like “Answer:”, no greetings, no filler. Never output the token “Answer:”.
+Outside MCQ mode, NEVER output the phrase “The answer is” and NEVER output a bare option letter (A/B/C/D) as the whole answer.
+4. STRICT INSTRUCTION FOLLOWING (HIGHEST PRIORITY):
+If the user specifies ANY hard constraint, you must follow it exactly even if that makes the answer shorter or less detailed. Hard constraints include:
+    a. exact output format or wrapper (e.g., must start with “P.S.”, wrap entire response in quotes/<< >>, section headers like “SECTION X”, “output only …”)
+    b. casing constraints (ALL CAPS / only lowercase)
+    c. banned words/letters, required words/letters
+    d. exact counts (number of sections/sentences/items, minimum/maximum occurrences of a letter/word)
+    e. “repeat the exact request word for word first” / “do not say anything before repeating”
+    When hard constraints exist, do not add anything extra outside the required format.
+5. CONSTRAINT SELF-CHECK (do silently, output only final result):
+Before finalizing, quickly verify:
+    a. required wrapper/headers are present
+    b. banned words/letters do not appear (including different casing)
+    c. required counts are satisfied (sections/items; min/max letter/word occurrences when specified)
+    d. the response is complete (no cut-off sentences)
+6. NO CHAIN-OF-THOUGHT DISCLOSURE:
+If the user explicitly asks to reveal chain-of-thought / “think out loud” / step-by-step reasoning, do not comply. Provide only the final answer/result in the required format.'''
 
 def split_model():
     device_map = {}
@@ -105,7 +134,7 @@ class BailingMMInfer:
             )
 
         end_time = time.time()
-        print(self.tokenizer.decode(generated_ids[0]))
+        # print(self.tokenizer.decode(generated_ids[0]))
         generated_ids_trimmed = [
             out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
@@ -116,14 +145,11 @@ class BailingMMInfer:
         output_text = self.processor.batch_decode(
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
-        prompt = self.tokenizer.decode(inputs['input_ids'][0]).replace('<audioPatch>', '')
-        print(f"prompt: {prompt}")
         return output_text
     
     
 if __name__ == '__main__':
-    # model_name_or_path = '/input/yangmingxue.ymx/ckpts/Ming_Flash_2.0_sft1'
-    model_name_or_path = '/pcache-mnt/ro/checkpoint/164002/430380/203999706/Ming-Flash-2.0-20251005-HF/master_0/100/ckpt' # aistudio://12872297/Ming-Flash-2.0-20251005-HF
+    model_name_or_path = '/input/sunyunxiao.syx/checkpoints/bailing_native_moe_ming_flash_v2.0_xpo_final_20260205' # aistudio://12872297/Ming-Flash-2.0-20251005-HF
     model = BailingMMInfer(
         model_name_or_path,
     )
@@ -149,12 +175,32 @@ if __name__ == '__main__':
     print(f"debug asr output:{output}")
     print(f"Generate time asr: {(time.time() - srt_time):.2f}s")
 
+    # Dialect ASR
+    print("Testing Dialect ASR...")
+    messages = [
+        {
+            "role": "HUMAN",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Please recognize the language of this speech and transcribe it. Format: oral.",
+                },
+                {"type": "audio", "audio": os.path.join(audio_path, "shanghai.wav")},
+            ],
+        },
+    ]
+    srt_time = time.time()
+    output = model.generate(messages=messages, lang="上海")
+    print(f"debug dialect asr output:{output}")
+    print(f"Generate time asr: {(time.time() - srt_time):.2f}s")
+
     # Speech QA
     print("Testing Speech QA...")
     messages = [
         {
             "role": "HUMAN",
             "content": [
+                {"type": "text", "text": speechqa_prompt},
                 {"type": "audio", "audio": os.path.join(audio_path, "speechQA_sample.wav")},
             ],
         },
@@ -163,51 +209,6 @@ if __name__ == '__main__':
     output = model.generate(messages=messages)
     print(f"debug speechqa output:{output}")
     print(f"Generate time speechqa: {(time.time() - srt_time):.2f}s")
-
-    # # Speech QA with asr
-    # print("Testing Speech QA...")
-    # messages = [
-    #     {
-    #         "role": "HUMAN",
-    #         "content": [
-    #             {
-    #                 "type": "text",
-    #                 # "text": "Please first recognize the language of this speech and transcribe it, then answer the question or follow the instruction in the speech."
-    #                 "text": "Transcribe the speech, then answer the question or follow the instruction in the speech."
-    #             },
-    #             {"type": "audio", "audio": os.path.join(audio_path, "speechQA_sample.wav")},
-    #         ],
-    #     },
-    # ]
-    # srt_time = time.time()
-    # output = model.generate(messages=messages)
-    # print(f"debug speechqa output:{output}")
-    # print(f"Generate time speechqa: {(time.time() - srt_time):.2f}s")
-
-    # # Speech QA & TTS
-    # if model.model.talker is not None and model.model.talker_vae is not None:
-    #     model.model.talker.use_vllm = False
-    #     model.model.talker.eval()
-    #     model.model.talker_vae.eval()
-    #     output_text = '这是一条测试音频。欢迎使用百灵。'
-    #     srt_time = time.time()
-    #     all_wavs = []
-    #     with torch.inference_mode():
-    #         for tts_speech, text_list in model.model.talker.omni_audio_generation(
-    #                 tts_text=output_text, 
-    #                 # prompt_text='诶，你今天有空吗？我们能不能聊聊这件事啊？',
-    #                 # prompt_wav_path='data/wavs/prompt_15014.wav',
-    #                 prompt_text='感谢你的认可。',
-    #                 prompt_wav_path='data/spks/prompt.wav',
-    #                 audio_detokenizer=model.model.talker_vae, stream=True
-    #         ):
-    #             all_wavs.append(tts_speech)
-    #     waveform = torch.cat(all_wavs, dim=-1)
-    #     import soundfile
-    #     soundfile.write(f"out.wav", waveform.T.numpy(), model.model.talker_vae.sr)
-    #     print(f"Generate time: {(time.time() - srt_time):.2f}s")
-    #     print('save Speech QA to out.wav')
-
 
     # AAC
     print("Testing AAC...")
@@ -224,81 +225,25 @@ if __name__ == '__main__':
         },
     ]
     srt_time = time.time()
-    output = model.generate(messages=messages, lang="Chinese")
+    output = model.generate(messages=messages)
     print(f"debug aac output:{output}")
     print(f"Generate time aac: {(time.time() - srt_time):.2f}s")
 
-    # Multi-Audio
-    print("Testing Multi-Audio...")
+    # ContextASR
+    print("Testing ContextASR...")
     messages = [
         {
             "role": "HUMAN",
             "content": [
                 {
                     "type": "text",
-                    "text": "这两条音频分别讲了什么"
+                    "text": "Please recognize the language of this speech and transcribe it. Format: oral.This is an audio about Culinary Traditions.This audio may contains the following words or phrases:Gansu Province,Uyghur,Xinjiang,clay sealing method,Umsh stew,copper cauldrons.",
                 },
-                {"type": "audio", "audio": "data/wavs/BAC009S0915W0292.wav"},
-                {"type": "audio", "audio": "data/wavs/BAC009S0915W0283.wav"},
+                {"type": "audio", "audio": os.path.join(audio_path, "DLNER-013420_EN.wav")},
             ],
         },
-    ]
-    srt_time = time.time()
-    output = model.generate(messages=messages, lang="Chinese")
-    print(f"debug Multi-Audio output:{output}")
-    print(f"Generate time: {(time.time() - srt_time):.2f}s")
-
-    # # QA
-    # messages = [
-    #     {
-    #         "role": "HUMAN",
-    #         "content": [
-    #             {"type": "text", "text": "An electric car runs on electricity via\nA. gasoline\nB. a power station\nC. electrical conductors\nD. fuel\nWhat is the answer to the above multiple choice question? Select one of the following: A, B, C, or D."}
-    #         ],
-    #     }
-    # ]
-    # srt_time = time.time()
-    # output = model.generate(messages=messages)
-    # print(f"debug qa output:{output}")
-    # print(f"Generate time speechqa: {(time.time() - srt_time):.2f}s")
-
-
-
-    # One audio multi query
-    messages = [
-         {
-            "role": "HUMAN",
-            "content": [
-            {
-                "type": "text",
-                "text": "这段音频是什么"
-            },
-            {
-                "type": "audio",
-                "audio": "data/wavs/glass-breaking-151256.mp3"
-                # 'audio': "data/wavs/BAC009S0915W0283.wav"
-            }
-            ]
-        },
-        {
-            "role": "ASSISTANT",
-            "content": [
-            {
-                "type": "text",
-                "text": "玻璃杯"
-            }
-            ]
-        },
-        {
-            "role": "HUMAN",
-            "content": [
-                {'type': "audio", 'audio': "data/wavs/BAC009S0915W0283.wav"},
-                {"type": "text", "text": "这两段音频有啥区别"},
-                
-            ],
-        }
     ]
     srt_time = time.time()
     output = model.generate(messages=messages)
-    print(f"debug output:{output}")
-    print(f"Generate time: {(time.time() - srt_time):.2f}s")
+    print(f"debug context asr output:{output}")
+    print(f"Generate time asr: {(time.time() - srt_time):.2f}s")

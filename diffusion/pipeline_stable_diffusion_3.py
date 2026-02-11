@@ -1006,6 +1006,8 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
         if negative_pooled_prompt_embeds is not None:
             negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(self.transformer.dtype)
 
+
+        #embed()
         if self.do_classifier_free_guidance:
             assert skip_guidance_layers is None
             if skip_guidance_layers is not None:
@@ -1031,7 +1033,7 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
         )
 
         if ref_x is not None:
-            assert ref_x.ndim == 4 and ref_x.shape[0] == 1
+            assert ref_x.ndim == 4 #  and ref_x.shape[0] == 1
             ref_x = ref_x.to(self.vae.dtype).to(device)
             # if torch.distributed.get_rank() == 0:
             #     embed()
@@ -1101,7 +1103,7 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
 
         if extra_vit_input is not None:
             extra_vit_input = torch.cat([extra_vit_input * 1.0, extra_vit_input])
-            
+        
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -1112,9 +1114,9 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
                 # ---------- 1) 构造分支输入 ----------
                 if ref_x is None:
                     ref_x_in = None
-                    latent_model_input = torch.cat([latents] * 2)
+                    latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                     txt_batch  = torch.cat([null_txt_embeds,
-                                            prompt_embeds], 0)
+                                            prompt_embeds], 0) if self.do_classifier_free_guidance else prompt_embeds
                 elif do_img_cfg and self.do_classifier_free_guidance:
                     # 四分支：eps_u / eps_img / eps_txt / eps_full                   
                     # uncond  # only-img  # only-txt # full
@@ -1127,12 +1129,12 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
                 else:
                     latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                     txt_batch  = torch.cat([null_txt_embeds,
-                                            prompt_embeds], 0)
-                    ref_x_in = torch.cat([ref_x, ref_x], dim=0).to(latents.dtype)
+                                            prompt_embeds], 0) if self.do_classifier_free_guidance else prompt_embeds
+                    ref_x_in = torch.cat([ref_x, ref_x], dim=0).to(latents.dtype) if self.do_classifier_free_guidance else ref_x
 
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latent_model_input.shape[0])
-                
+                #embed()
                 noise_pred = self.transformer(
                     hidden_states=latent_model_input,
                     timestep=timestep,
@@ -1149,6 +1151,7 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
                     directvlm_use_norm=directvlm_use_norm,
                     use_refiner=use_refiner,
                 )[0]
+                #embed()
                 
                 # perform guidance
                 if self.do_classifier_free_guidance:

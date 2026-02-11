@@ -19,6 +19,7 @@ import sys
 from typing import Iterable, List, Union, Dict, Optional, Tuple
 
 import torch
+import PIL
 from PIL import Image
 
 if sys.version_info >= (3, 11):
@@ -34,7 +35,7 @@ from transformers.processing_utils import (
 )
 from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
 
-from bailingmm_utils import process_vision_info, VideoInput, process_ratio
+from bailingmm_utils import process_vision_info, VideoInput, process_ratio, process_reference_vision_info, get_default_image_gen_hw
 import torchvision
 import math
 
@@ -84,7 +85,7 @@ def check_single_quotes(s):
                 chinese_count += 1
         other_count = len(substr) - chinese_count
         total = 3 * chinese_count + other_count
-        if total >= 60:
+        if total >= 20:
             return False
     return True
 
@@ -105,7 +106,7 @@ def get_text_from_prompt(prompt):
     if len(texts) == 1:
         assert texts[0] in prompt
         is_remove = False
-        remove_keywords = ["remove", "delete", "clear"]
+        remove_keywords = ["remove", "delete", "erase"]
         text_start = min([j for j in [prompt.find(i) for i in ['"', '‘', '“']] if j >= 0])
         for kw in remove_keywords:
             if kw in prompt.lower():
@@ -160,10 +161,30 @@ def crop_to_aspect_max(img: Image.Image, target_ratio: float) -> Image.Image:
     crop = torchvision.transforms.CenterCrop((new_h, new_w))  # size为(h, w)
     return crop(img)
 
+def transform_reference_images(images, image_gen_aspect_ratio=None, image_gen_resolution=512):
+
+    ref_pil = images[0]
+    if image_gen_aspect_ratio is not None:
+        ref_pil = crop_to_aspect_max(ref_pil, image_gen_aspect_ratio)
+
+    ref_pil = ref_pil.convert("RGB")
+    ori_h = ref_pil.size[1]
+    ori_w = ref_pil.size[0]
+    closest_size, _ = process_ratio(ori_h=ori_h, ori_w=ori_w, highres=image_gen_resolution)
+    
+    ref_pils = [torchvision.transforms.functional.resize(i, closest_size, interpolation=torchvision.transforms.InterpolationMode.BILINEAR) for i in images]
+    
+    ref_tensor = torch.cat([
+        ((torchvision.transforms.functional.to_tensor(i) - 0.5) * 2.0).unsqueeze(0)
+        for i in ref_pils
+    ], dim=0)
+
+    return ref_tensor, ref_pil.size[1], ref_pil.size[0]
+
 class BailingMM2ProcessorKwargs(ProcessingKwargs, total=False):
     # see processing_utils.ProcessingKwargs documentation for usage.
     _defaults = {
-        "text_kwargs": {"padding": False, "padding_side": "right"},
+        "text_kwargs": {"padding": True, "padding_side": "right"},
         "image_kwargs": {},
         "video_kwargs": {},
         "audio_kwargs": {"padding": "max_length", "return_tensors": True, "use_whisper_encoder": False},
@@ -203,7 +224,8 @@ class BailingMM2Processor(ProcessorMixin):
         "num_image_tokens",
         "image_token",
         "video_token",
-        "audio_tokens"
+        "audio_tokens",
+        "use_interleaved_frame_timestamp",
     ]
 
     def __init__(
@@ -233,8 +255,9 @@ class BailingMM2Processor(ProcessorMixin):
         videos: VideoInput = None,
         audios: Union[Tuple[np.ndarray, torch.Tensor, int], List[Tuple[np.ndarray, torch.Tensor, int]]] = None,
         text: Union[TextInput, PreTokenizedInput, List[TextInput], List[PreTokenizedInput]] = None,
-        image_gen_highres = False,
+        image_gen_highres = 1024,
         image_gen_aspect_ratio = None,
+        image_gen_ref_images: Union["PIL.Image.Image", list["PIL.Image.Image"]] = None,
         **kwargs,
     ) -> BatchFeature:
         """
@@ -291,11 +314,15 @@ class BailingMM2Processor(ProcessorMixin):
         image_gen_inputs = {}
 
         text_in_text = [get_text_from_prompt(i) for i in text]
+
+
+        default_image_gen_height, default_image_gen_width = get_default_image_gen_hw(image_gen_highres, image_gen_aspect_ratio)
+        
         image_gen_inputs.update({
             "image_gen_text": text_in_text,
             "image_gen_highres": image_gen_highres,
-            "image_gen_height": torch.LongTensor([512]),
-            "image_gen_width": torch.LongTensor([512]) if image_gen_aspect_ratio is None else torch.LongTensor([int(512.0 * image_gen_aspect_ratio)]),
+            "image_gen_height": torch.LongTensor([default_image_gen_height]),
+            "image_gen_width": torch.LongTensor([default_image_gen_width]),
         })
 
         if images is not None:
@@ -303,30 +330,38 @@ class BailingMM2Processor(ProcessorMixin):
             image_grid_thw = image_inputs["image_grid_thw"]
             
             text = self._expand_image_tokens(text, image_grid_thw)
-            ref_pil = images[0] if isinstance(images, list) else images
-            if image_gen_aspect_ratio is not None:
-                ref_pil = crop_to_aspect_max(ref_pil, image_gen_aspect_ratio)
 
-            ref_pil = ref_pil.convert("RGB")
-            ori_h = ref_pil.size[1]
-            ori_w = ref_pil.size[0]
-            closest_size, _ = process_ratio(ori_h=ori_h, ori_w=ori_w, highres=image_gen_highres)
-            #ref_pil = torchvision.transforms.functional.resize(ref_pil, resize_size, interpolation=torchvision.transforms.InterpolationMode.BILINEAR)
-            #ref_pil = torchvision.transforms.functional.center_crop(ref_pil, closest_size)
-            ref_pil = torchvision.transforms.functional.resize(ref_pil, closest_size, interpolation=torchvision.transforms.InterpolationMode.BILINEAR)
-            ref_tensor = ((torchvision.transforms.functional.to_tensor(ref_pil) - 0.5) * 2.0).unsqueeze(0)
-            image_gen_inputs.update({
-                "image_gen_pixel_values_reference": ref_tensor,
-                "image_gen_height": torch.LongTensor([ref_pil.size[1]]),
-                "image_gen_width": torch.LongTensor([ref_pil.size[0]]),
-                #"image_gen_height": torch.LongTensor([ori_h]),
-                #"image_gen_width": torch.LongTensor([ori_w]),
-            })
+            # image_gen_pixel_values_reference, image_gen_height, image_gen_width = None, 512, 512
+            if image_gen_ref_images is not None:
+                if isinstance(image_gen_ref_images, PIL.Image.Image):
+                    image_gen_ref_images = [image_gen_ref_images]
+                elif not isinstance(image_gen_ref_images, list) and not isinstance(image_gen_ref_images[0], PIL.Image.Image):
+                    raise ValueError("Invalid input image_gen_ref_images. Please provide a PIL.Image.Image, or a list of PIL.Image.Image")
+
+                assert len(image_gen_ref_images) == len(text) # same batch_size 
+
+                image_gen_pixel_values_reference, image_gen_height_list, image_gen_width_list = transform_reference_images(image_gen_ref_images, image_gen_aspect_ratio, image_gen_highres)
+            
+                image_gen_inputs.update({
+                    "image_gen_pixel_values_reference": image_gen_pixel_values_reference,
+                    "image_gen_height": torch.LongTensor([image_gen_height_list]),
+                    "image_gen_width": torch.LongTensor([image_gen_width_list]),
+                    #"image_gen_height": torch.LongTensor([ori_h]),
+                    #"image_gen_width": torch.LongTensor([ori_w]),
+                })
 
         if videos is not None:
-            video_inputs = self.image_processor(images=None, videos=videos, do_resize=False, **output_kwargs["videos_kwargs"])
-            video_grid_thw = video_inputs["video_grid_thw"]
-            text = self._expand_video_tokens(text, video_grid_thw)
+            video_metas = [_[1] for _ in videos]
+            video_contents = [_[0] for _ in videos]
+            videos_timestamps_seconds = [_["resmp_ts"] for _ in video_metas]
+            video_inputs = self.image_processor(
+                images=None,
+                videos=video_contents,
+                do_resize=False,
+                videos_timestamps_seconds=videos_timestamps_seconds,
+                **output_kwargs["videos_kwargs"],
+            )
+            text = self._expand_video_tokens(text, video_inputs)
 
         if audios is not None:
             audio_inputs = self.audio_processor(audios, **output_kwargs["audio_kwargs"])
@@ -406,7 +441,6 @@ class BailingMM2Processor(ProcessorMixin):
                     if image_counts < num_images:
                         image_placeholder = "<IMAGE>\n" * (num_images - image_counts)
                         text += image_placeholder.rstrip("\n")
-                # only one video supported now
                 elif content["type"] == "video":
                     assert video_counts <= 1, "Video count must be at most 1!"
                     if video_counts == 0:
@@ -428,6 +462,12 @@ class BailingMM2Processor(ProcessorMixin):
         conversations,
     ):
         return process_vision_info(conversations)
+
+    def process_reference_vision_info(
+        self,
+        conversations,
+    ):
+        return process_reference_vision_info(conversations)
 
     def _expand_image_tokens(
         self,
@@ -452,22 +492,56 @@ class BailingMM2Processor(ProcessorMixin):
     def _expand_video_tokens(
         self,
         text: List[TextInput],
-        video_grid_thw: Union[List[int], int],
+        video_inputs: Dict,
         special_token: str = "<VIDEO>",
     ):
         prompt_strings = []
         video_index = 0
-        num_query_token = torch.prod(video_grid_thw, dim=1) // 4
+        video_grid_thw = video_inputs["video_grid_thw"]
+        video_timestamps_seconds = video_inputs.pop("video_timestamps_seconds")
+        use_interleaved_frame_timestamp = self.image_processor.__dict__.get(
+            "use_interleaved_frame_timestamp", False
+        )
         for sample in text:
-            num_videos = sample.count(special_token)
-            if num_videos > 0:
-                for i in range(video_index, num_videos + video_index):
-                    video_text = num_query_token[i] * DEFAULT_FRAME_PATCH_TOKEN
-                    video_text = DEFAULT_VID_START_TOKEN + video_text + DEFAULT_VID_END_TOKEN + "\n"
+            num_video_placeholder = sample.count(special_token)
+            if num_video_placeholder > 0:
+                for i in range(video_index, num_video_placeholder + video_index):
+                    if not use_interleaved_frame_timestamp:
+                        num_query_token = (
+                            torch.prod(
+                                video_grid_thw[i],
+                            )
+                            // 4
+                        )
+                        video_text = num_query_token * DEFAULT_FRAME_PATCH_TOKEN
+                        video_text = (
+                            DEFAULT_VID_START_TOKEN
+                            + video_text
+                            + DEFAULT_VID_END_TOKEN
+                            + "\n"
+                        )
+                    else:
+                        video_t, video_h, video_w = video_grid_thw[i].tolist()
+                        video_text = DEFAULT_VID_START_TOKEN
+                        for tix in range(video_t):
+                            video_text += (
+                                f"<{video_timestamps_seconds[i][tix]:.1f} seconds>"
+                                + DEFAULT_IM_START_TOKEN
+                                + int(video_h * video_w // 4)
+                                * DEFAULT_FRAME_PATCH_TOKEN
+                                + DEFAULT_IM_END_TOKEN
+                            )
+                        video_text += DEFAULT_VID_END_TOKEN
                     sample = sample.replace(special_token, video_text, 1)
-            video_index += num_videos
+            video_index += num_video_placeholder
             prompt_strings.append(sample)
         text = [sample for sample in prompt_strings]
+        if use_interleaved_frame_timestamp:
+            video_grid_thw = torch.repeat_interleave(
+                video_grid_thw, video_grid_thw[:, 0], dim=0
+            )
+            video_grid_thw[:, 0] = 1
+            video_inputs["video_grid_thw"] = video_grid_thw
         return text
 
     def _expand_audio_tokens(

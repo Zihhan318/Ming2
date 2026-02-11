@@ -26,7 +26,7 @@ class BailingMoeV2Config(PretrainedConfig):
         rope_theta=10000.0,
         use_cache=True,
         use_sliding_window=False,
-        sliding_window=4096,
+        sliding_window=81920,
         max_window_layers=28,
         rope_scaling=None,
         pad_token_id=126081,
@@ -43,6 +43,7 @@ class BailingMoeV2Config(PretrainedConfig):
         partial_rotary_factor=0.5,
         router_type="topN",
         _attn_implementation="flash_attention_2",
+        use_interleaved_frame_timestamp=True,
         **kwargs,
     ):
         self.num_hidden_layers = num_hidden_layers
@@ -80,6 +81,7 @@ class BailingMoeV2Config(PretrainedConfig):
         self.routed_scaling_factor = routed_scaling_factor
         self.partial_rotary_factor = partial_rotary_factor
         self.router_type = router_type
+        self.use_interleaved_frame_timestamp = use_interleaved_frame_timestamp
         super().__init__(pad_token_id=pad_token_id, tie_word_embeddings=tie_word_embeddings, **kwargs)
         self._attn_implementation = _attn_implementation
 

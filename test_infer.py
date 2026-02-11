@@ -14,27 +14,6 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-
-def split_model():
-    device_map = {}
-    world_size = torch.cuda.device_count()
-    num_layers = 32
-    layer_per_gpu = num_layers // world_size
-    layer_per_gpu = [i * layer_per_gpu for i in range(1, world_size + 1)]
-    for i in range(num_layers):
-        device_map[f'model.model.layers.{i}'] = bisect_left(layer_per_gpu, i)
-
-    device_map['vision'] = 0
-    device_map['audio'] = 0
-    device_map['linear_proj'] = 0
-    device_map['linear_proj_audio'] = 0
-    device_map['model.model.word_embeddings.weight'] = 0
-    device_map['model.model.norm.weight'] = 0
-    device_map['model.lm_head.weight'] = 0
-    device_map['model.model.norm'] = 0
-    device_map[f'model.model.layers.{num_layers - 1}'] = 0
-    return device_map
-
 def generate(messages, processor, model, sys_prompt_exp=None, use_cot_system_prompt=False, max_new_tokens=512):
     text = processor.apply_chat_template(
         messages, 
@@ -49,6 +28,7 @@ def generate(messages, processor, model, sys_prompt_exp=None, use_cot_system_pro
         videos=video_inputs,
         audios=audio_inputs,
         return_tensors="pt",
+        audio_kwargs={"use_whisper_encoder": True},
     ).to(model.device)
 
     for k in inputs.keys():
@@ -86,10 +66,10 @@ if __name__ == '__main__':
     code_path = "."
     model = BailingMM2NativeForConditionalGeneration.from_pretrained(
         model_name_or_path,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
-        device_map=split_model(),
-        load_image_gen=True,
+        device_map="auto",
+        load_image_gen=False,
     ).to(dtype=torch.bfloat16)
 
     processor = AutoProcessor.from_pretrained(code_path, trust_remote_code=True)
@@ -190,9 +170,11 @@ if __name__ == '__main__':
             ],
         }
     ]
-    
+
     srt_time = time.time()
-    output_text = generate(messages, processor=processor, model=model, max_new_tokens=512)
+    output_text = generate(
+        messages, processor=processor, model=model, max_new_tokens=512
+    )
     print(output_text)
     print(f"Generate time: {(time.time() - srt_time):.2f}s")
 
@@ -200,33 +182,41 @@ if __name__ == '__main__':
         {
             "role": "HUMAN",
             "content": [
-                {"type": "text", "text": "Draw a beautiful girl with short black hair and red dress."},
+                {
+                    "type": "video",
+                    "video": os.path.join(vision_path, "video_demo294_0.mp4"),
+                },
+                {
+                    "type": "text",
+                    "text": "我们好像快到了吧？前面那个写着沃尔玛的就是我们要去的地方吗？",
+                },
             ],
-        }
+        },
+        {
+            "role": "ASSISTANT",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "是的，根据路边的指示牌，我们正在接近沃尔玛超市的停车场。",
+                },
+            ],
+        },
+        {
+            "role": "HUMAN",
+            "content": [
+                {
+                    "type": "video",
+                    "video": os.path.join(vision_path, "video_demo294_1.mp4"),
+                },
+                {
+                    "type": "audio",
+                    "audio": os.path.join(vision_path, "video_demo_query.wav"),
+                },
+            ],
+        },
     ]
 
-    text = processor.apply_chat_template(messages, add_generation_prompt=True)
-    image_inputs, video_inputs, audio_inputs = processor.process_vision_info(messages)
-
-    inputs = processor(
-        text=[text],
-        images=image_inputs,
-        videos=video_inputs,
-        audios=audio_inputs,
-        return_tensors="pt",
-    ).to(model.device)
-
-    for k in inputs.keys():
-        if k in ["pixel_values", "pixel_values_videos", "audio_feats", "pixel_values_reference"]:
-            inputs[k] = inputs[k].to(dtype=torch.bfloat16)
-
-    # set `image_gen=True` to enable image generation
-    image = model.generate(
-        **inputs,
-        image_gen=True,
-    )
-    
-    image_save_path = "./t2i_girl.jpg"
-    image.save(image_save_path)
-
-    print("Instruction: Draw a beautiful girl with short black hair and red dress: {}.".format(image_save_path))
+    srt_time = time.time()
+    output_text = generate(messages, processor=processor, model=model, max_new_tokens=512)
+    print(output_text)
+    print(f"Generate time: {(time.time() - srt_time):.2f}s")

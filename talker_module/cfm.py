@@ -2,14 +2,9 @@
 # Email: wanren.pj@antgroup.com
 # Date: 2025/7/24
 from __future__ import annotations
-
-from random import random
-from typing import Callable
-
 import torch
 import torch.nn.functional as F
 from torch import nn
-# from torchdiffeq import odeint
 
 
 def get_epss_timesteps(n, device, dtype):
@@ -30,64 +25,30 @@ def get_epss_timesteps(n, device, dtype):
 
 class CFM(nn.Module):
     def __init__(self, model,
-                 steps=32, cfg_strength=2.0,
-                 sway_sampling_coef=-1, use_epss=True,
-                 odeint_kwargs=None,
-                 sigma=-1, temperature=1.5):
+                 steps=10, sway_sampling_coef=-1):
         super().__init__()
         # transformer
         self.model = model
 
-        self.steps, self.cfg_strength = steps, cfg_strength
-        self.sway_sampling_coef, self.use_epss = sway_sampling_coef, use_epss
-        # sampling related
-        self.odeint_kwargs = {
-            # 'atol': 1e-5,
-            # 'rtol': 1e-5,
-            'method': "euler"  # 'midpoint'
-        } if odeint_kwargs is None else odeint_kwargs
-
-        self.sigma = sigma  # 0.25
-        self.temperature = temperature
+        self.steps = steps
+        self.sway_sampling_coef = sway_sampling_coef
 
     @torch.no_grad()
-    def sample(self, llm_cond, lat_cond, y0, t, spk_emb=None, gen_len=None):
-        # self.eval()
-
+    def sample(self, llm_cond, lat_cond, y0, t, sde_args, sde_rnd):
+        # cfg_strength=2, sigma=0, temperature=0
         def fn(fn_t, x):
-            # predict flow (cond)
-            if self.cfg_strength < 1e-5:
-                pred = self.model(x, fn_t, llm_cond, lat_cond, spk_emb)
-                return pred
-
-            # predict flow (cond and uncond), for classifier-free guidance
-            pred_cfg = self.model.forward_with_cfg(x, fn_t, llm_cond, lat_cond, spk_emb)
+            pred_cfg = self.model.forward_with_cfg(x, fn_t, llm_cond, lat_cond, None)
             pred, null_pred = torch.chunk(pred_cfg, 2, dim=0)
-            return pred + (pred - null_pred) * self.cfg_strength
+            return pred + (pred - null_pred) * sde_args[0]
 
-        # noise input
-        # if gen_len is None:
-        #     y0 = torch.randn_like(lat_cond)
-        # else:
-        #     y0 = torch.randn((lat_cond.shape[0], gen_len, lat_cond.shape[2]),
-        #                      dtype=lat_cond.dtype, device=lat_cond.device)
-
-        t_start = 0
-
-        # if t_start == 0 and self.use_epss:  # use Empirically Pruned Step Sampling for low NFE
-        #     # t = get_epss_timesteps(self.steps, device=y0.device, dtype=y0.dtype)
-        # else:
-        #     t = torch.linspace(t_start, 1, self.steps + 1, device=y0.device, dtype=y0.dtype)
         if self.sway_sampling_coef is not None:
             t = t + self.sway_sampling_coef * (torch.cos(torch.pi / 2 * t) - 1 + t)
 
-        # trajectory = odeint(fn, y0, t, **self.odeint_kwargs)
         trajectory = [y0]
-        for t0, t1 in zip(t[:-1], t[1:]):
-            dt = t1 - t0
-            y0 = y0 + fn(t0, y0) * dt
-            # if self.sigma > 0:
-            #     y0 = y0 + self.sigma * (self.temperature ** 0.5) * (abs(dt) ** 0.5) * torch.randn_like(y0)
+        for step in range(self.steps):
+            dt = t[step+1] - t[step]
+            y0 = y0 + fn(t[step], y0) * dt
+            y0 = y0 + sde_args[1] * (sde_args[2] ** 0.5) * (dt.abs() ** 0.5) * sde_rnd[step]
             trajectory.append(y0)
 
         sampled = trajectory[-1]

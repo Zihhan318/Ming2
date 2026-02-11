@@ -1,12 +1,75 @@
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import Qwen2Model, Qwen2Config
+import torch
 
 from .istft import ISTFTHead
 
 
+class StreamingLinearUpsample(nn.Module):
+    def __init__(self, scale_factor=4):
+        super().__init__()
+        self.scale_factor = scale_factor
+        self.upsampler = nn.Upsample(scale_factor=scale_factor, mode='linear', align_corners=False)
+
+    def forward(self, x, state=None, is_last=False):
+        # 初始化状态
+        if state is None:
+            state = {
+                'prev_chunk': None,
+                'history_last': None,
+                'is_first': True
+            }
+
+        if x is None and not is_last:
+            return None, state
+
+        if state['is_first'] and is_last:
+            out = self.upsampler(x.transpose(1, 2)).transpose(1, 2)
+            return out, None # 结束后清除状态
+
+        output_chunks = []
+
+        if state['is_first']:
+            state['prev_chunk'] = x
+            state['is_first'] = False
+            if not is_last:
+                return None, state
+
+        if state['prev_chunk'] is not None:
+            p = state['prev_chunk'].transpose(1, 2)
+
+            if state['history_last'] is None:
+                lookahead = x[:, :1, :].transpose(1, 2)
+                inp = torch.cat([p, lookahead], dim=2)
+                up = self.upsampler(inp)
+                out_prev = up[:, :, :p.size(2) * self.scale_factor]
+            else:
+                lookahead = x[:, :1, :].transpose(1, 2)
+                inp = torch.cat([state['history_last'], p, lookahead], dim=2)
+                up = self.upsampler(inp)
+                start = self.scale_factor
+                end = start + p.size(2) * self.scale_factor
+                out_prev = up[:, :, start:end]
+
+            output_chunks.append(out_prev.transpose(1, 2))
+            state['history_last'] = p[:, :, -1:]
+            state['prev_chunk'] = x
+
+        if is_last:
+            p = state['prev_chunk'].transpose(1, 2)
+            inp = torch.cat([state['history_last'], p], dim=2)
+            up = self.upsampler(inp)
+            out_last = up[:, :, self.scale_factor:]
+            output_chunks.append(out_last.transpose(1, 2))
+            state = None # 结束
+
+        final_out = torch.cat(output_chunks, dim=1) if output_chunks else None
+        return final_out, state
+
+
 class Encoder(nn.Module):
-    def __init__(self, encoder_args, input_dim=320, hop_size=320, latent_dim=64):
+    def __init__(self, encoder_args, input_dim=320, hop_size=320, latent_dim=64, patch_size=-1):
         super().__init__()
         config = Qwen2Config.from_dict(config_dict=encoder_args)
         self.encoder = Qwen2Model(config)
@@ -17,17 +80,12 @@ class Encoder(nn.Module):
         self.fc2 = nn.Linear(config.hidden_size, config.hidden_size)
         self.fc3 = nn.Linear(config.hidden_size, latent_dim*2)
         self.norm = nn.LayerNorm(config.hidden_size)
-
-    def pad_waveform(self, x):
-        length = x.size(1)
-        if length % self.input_dim == 0:
-            return x
-
-        pad_length = self.input_dim - (length % self.input_dim)
-
-        x = F.pad(x, (0, pad_length, 0, 0), value=0)
-        assert x.size(1) % self.input_dim == 0
-        return x
+        self.patch_size = patch_size
+        if patch_size != -1:
+            config.num_hidden_layers = 4
+            self.aggregator = Qwen2Model(config)
+            self.cls_embed = nn.Parameter(torch.rand(1, 1, config.hidden_size))
+            self.cls_embed.data.normal_(0, 0.02)
 
     def get_frames(self, x):
         num_frames_total = (x.size(-1) + self.hop_size - 1) // self.hop_size  # 向上取整的帧数
@@ -38,84 +96,109 @@ class Encoder(nn.Module):
         frames = waveform.unfold(dimension=-1, size=self.input_dim, step=self.hop_size)   # [B, T, d]
         return frames
 
+    def pad_patch_insert_cls(self, x):
+        bsz, _, dim = x.size()
+        num_frame = x.size(1)
+        r = num_frame % self.patch_size
+        pad_num = self.patch_size-r if r else 0
+        x = F.pad(x, (0, 0, 0, pad_num), value=0.0)  # 帧数对齐到patch_size倍数
+        x = x.reshape(-1, self.patch_size, dim)
+        x = torch.cat((x, self.cls_embed.expand(x.size(0), -1, -1)), dim=1)  # 每个patch后插入一个cls
+        x = x.reshape(bsz, -1, dim)
+        return x
+
     def forward(self, waveform):
-        """
-
-        Args:
-            waveform: [B, T]
-
-        Returns:
-
-        """
         x = self.get_frames(waveform)
 
         x = self.fc1(x)
         x = self.fc2(x)
         x = self.encoder(inputs_embeds=x)
         x = x.last_hidden_state
+
+        # downsample
+        if self.patch_size != -1:
+            x = self.pad_patch_insert_cls(x)
+            x = self.aggregator(inputs_embeds=x)
+            x = x.last_hidden_state
+            bsz, _, dim = x.size()
+            x = x.reshape(-1, self.patch_size+1, dim)
+            x = x[:, -1:, :].reshape(bsz, -1, dim)
+
         x = self.fc3(x)
         return x, waveform.unsqueeze(1)
 
 
 class Decoder(nn.Module):
-    def __init__(self, decoder_args, output_dim=320, latent_dim=64, semantic_model=None, is_semantic_model_casual=False):
+    def __init__(self, decoder_args, output_dim=320, latent_dim=64, patch_size=-1):
         super().__init__()
         config = Qwen2Config.from_dict(config_dict=decoder_args)
         self.decoder = Qwen2Model(config)
         self.output_dim = output_dim
         self.latent_dim = latent_dim
         self.fc1 = nn.Linear(latent_dim, config.hidden_size)
-
-        if semantic_model is not None:
-            self.gelu = nn.GELU()
-            self.fc2 = nn.Linear(config.hidden_size, semantic_model.audio_emb_dim)
-            self.semantic_model = semantic_model
-            self.fc3 = nn.Linear(semantic_model.audio_emb_dim, config.hidden_size)
-            self.is_semantic_model_casual = is_semantic_model_casual
-        else:
-            self.semantic_model = None
-
         self.hop_length = output_dim
         self.head = ISTFTHead(dim=config.hidden_size, n_fft=self.hop_length * 4, hop_length=self.hop_length, padding="same")
+        self.patch_size = patch_size
+        if self.patch_size != -1:
+            self.upsampling = StreamingLinearUpsample(scale_factor=patch_size)
 
-    def forward(self, x, only_semantic_emb=False, cache=None, streaming=False, last_chunk=False):
-        """
-
-        Args:
-            waveform: [B, T, d]
-            only_semantic_emb: 是否只返回semantic embedding
-
-        Returns:
-
-        """
+    def low_level_reconstruct(self, x, past_key_values=None, use_cache=False, stream_state=None, last_chunk=False):
+        upsample_state, audio_buffer, window_buffer = stream_state
+        bsz, device, dtype = x.size(0), x.device, x.dtype
         x = self.fc1(x)
-        residual = x
-
-        if self.semantic_model is not None:
-            x = self.fc2(self.gelu(x))
-            mask = 1 if self.is_semantic_model_casual else None
-            x, _ = self.semantic_model(whipser_feats=x, encoder_only=True, mask=mask)
-            semantic_emb = x
-            if only_semantic_emb:
-                return semantic_emb
-            x = self.fc3(x)
-            x += residual
-        else:
-            semantic_emb = None
-
-        if streaming:
-            if cache is None:
-                past_key_values = audio_buffer = window_buffer = None
+        if self.patch_size != -1:
+            if use_cache:
+                # streaming
+                x, upsample_state = self.upsampling(x, state=upsample_state, is_last=last_chunk)
+                if x is None:
+                    stream_state = (upsample_state, audio_buffer, window_buffer)
+                    return torch.empty(bsz, 1, 0, device=device, dtype=dtype), stream_state, past_key_values
             else:
-                past_key_values, audio_buffer, window_buffer = cache
-            x = self.decoder(inputs_embeds=x, use_cache=True, past_key_values=past_key_values)
-            past_key_values = x.past_key_values
-            x, _, audio_buffer, window_buffer = self.head(
-                x.last_hidden_state, audio_buffer=audio_buffer, window_buffer=window_buffer,
-                streaming=True, last_chunk=last_chunk)
-            return x, semantic_emb, (past_key_values, audio_buffer, window_buffer)
-        
-        x = self.decoder(inputs_embeds=x, use_cache=False, past_key_values=None)
-        x, _, audio_buffer, window_buffer = self.head(
-            x.last_hidden_state, audio_buffer=None, window_buffer=None, streaming=False, last_chunk=False)
-        return x, semantic_emb, None
+                x = self.upsampling.upsampler(x.transpose(1, 2)).transpose(1, 2)
+
+        hidden_states_list = []
+
+        if use_cache and getattr(self.decoder.config, "sliding_window", None) is not None:
+            sw_size = self.decoder.config.sliding_window
+            target_len = sw_size - 1
+            if past_key_values is None:
+                past_len = 0
+            elif hasattr(past_key_values, "get_seq_length"):
+                past_len = past_key_values.get_seq_length()
+            elif isinstance(past_key_values, tuple) and len(past_key_values) > 0:
+                past_len = past_key_values[0][0].shape[-2]
+            else:
+                past_len = 0
+
+            curr_len = x.shape[1]
+
+            if past_len < target_len and (past_len + curr_len) >= sw_size:
+                fill_len = target_len - past_len
+                x_fill = x[:, :fill_len, :]
+                outputs = self.decoder(inputs_embeds=x_fill, past_key_values=past_key_values, use_cache=use_cache)
+
+                hidden_states_list.append(outputs.last_hidden_state)
+                past_key_values = outputs.past_key_values
+
+                x = x[:, fill_len:, :]
+
+        outputs = self.decoder(inputs_embeds=x, past_key_values=past_key_values, use_cache=use_cache)
+
+        hidden_states_list.append(outputs.last_hidden_state)
+        past_key_values = outputs.past_key_values
+
+        if len(hidden_states_list) > 1:
+            full_hidden_state = torch.cat(hidden_states_list, dim=1)
+        else:
+            full_hidden_state = hidden_states_list[0]
+
+        x_out, _, audio_buffer, window_buffer = self.head(
+            full_hidden_state,
+            streaming=use_cache,
+            audio_buffer=audio_buffer,
+            window_buffer=window_buffer,
+            last_chunk=last_chunk
+        )
+
+        stream_state = (upsample_state, audio_buffer, window_buffer)
+        return x_out, stream_state, past_key_values

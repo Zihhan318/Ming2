@@ -1,25 +1,27 @@
-# Ming-flash-omni Preview
+# Ming-flash-omni 2.0
 
 <p align="center">
     <img src="https://mdn.alipayobjects.com/huamei_drbxn1/afts/img/YLAgT5MSnLwAAAAAQXAAAAgADkliAQFr/original" width="100"/>
 <p>
 
-<p align="center">📑 <a href="https://arxiv.org/abs/2510.24821">Technical Report</a>｜🤗 <a href="https://huggingface.co/inclusionAI/Ming-flash-omni-Preview">Hugging Face</a>｜ 🤖 <a href="https://www.modelscope.cn/models/inclusionAI/Ming-flash-omni-Preview">ModelScope</a>
+<p align="center">📑 <a href="https://arxiv.org/abs/2506.09344">Technical Report</a>｜🤗 <a href="https://huggingface.co/inclusionAI/Ming-flash-omni-2.0">Hugging Face</a>｜ 🤖 <a href="https://www.modelscope.cn/models/inclusionAI/Ming-flash-omni-2.0">ModelScope</a>
 
 
 
 ## Introduction
 
-Ming-flash-omni Preview, an upgraded version of [Ming-Omni](https://arxiv.org/abs/2506.09344), built upon a sparser Mixture-of-Experts (MoE) variant of [Ling-Flash-2.0](https://github.com/inclusionAI/Ling-V2) with 100B total parameters, of which only 6B
-are active per token. Compared to its predecessor, the upgraded version exhibits substantial improvements across multimodal understanding and generation. We significantly advance speech recognition capabilities, achieving state-of-the-art performance in both contextual ASR and dialect-aware ASR. In image generation, Ming-flash-omni Preview introduces high-fidelity text rendering and demonstrates marked gains in scene consistency and identity preservation during image editing. Furthermore, Ming-flash-omni Preview introduces generative segmentation, a capability that not only achieves strong standalone segmentation performance but also enhances spatial control in image generation and improves editing consistency. It demonstrates highly competitive results in various modal benchmarks compared to industry-leading models.
+The newly released Ming-flash-omni 2.0 leverages the [Ling-2.0](https://github.com/inclusionAI/Ling-V2) architecture—a Mixture-of-Experts (MoE) framework comprising 100B total and 6B active parameters. Representing a generational advancement over its predecessor, it establishes new State-of-the-Art (SOTA) benchmarks among open-source omni-MLLMs. Ming-flash-omni 2.0 effectively synergizes foundational abilities with specialized domain expertise. In particular, it exhibits superior performance in visual encyclopedic knowledge, immersive speech synthesis, and high-dynamic image generation and manipulation.
+
+
 
 <p align="center">
-    <img src="https://mdn.alipayobjects.com/huamei_drbxn1/afts/img/5hflRY595xwAAAAAgBAAAAgADkliAQFr/fmt.avif" width="800"/>
+    <img src="https://mdn.alipayobjects.com/portal_djnzel/afts/img/A*G0UnSIs2SSAAAAAAgCAAAAgAegAAAQ/original" width="800"/>
 <p>
 
-## 📌 Updates
 
-* [2025.10.27] 🔥 We release the preview version of Ming-flash-omni：[Ming-flash-omni Preview](https://inclusionai.github.io/blog/ming-flash-omni-preview).
+## 📌 Updates
+* [2026.02.11] 🔥 We release the official version of Ming-flash-omni 2.0, an open-source SOTA omni-MLLM that pushes the boundaries of multimodal understanding and synthesis.
+* [2025.10.27] 🔥 We release the preview version of Ming-flash-omni：[Ming-flash-omni Preview](https://github.com/inclusionAI/Ming/tree/main).
 * [2025.07.15] 🔥 We release [Ming-lite-omni v1.5](https://github.com/inclusionAI/Ming/tree/v1.5) with significant improvements across all modalities.
 * [2025.06.12] 🔥 Our [Technical Report](https://arxiv.org/abs/2506.09344) is in public on arxiv.
 * [2025.05.28] 🔥 The official version of [Ming-lite-omni v1](https://github.com/inclusionAI/Ming/tree/v1.0) is released, with better performance and image generation support.
@@ -27,66 +29,66 @@ are active per token. Compared to its predecessor, the upgraded version exhibits
 
 
 ## Key Features
-Compared to [Ming-lite-omni v1.5](https://github.com/inclusionAI/Ming/tree/v1.5), Ming-flash-omni Preview features key optimizations in the following 3 areas:
-- **Sparse MoE Architecture for Omni-Modality**: The Sparse MoE Architecture for Omni-Modality features a 100B-A6B MoE backbone (an extension of Ling-Flash-2.0). To ensure uniform expert activation and stable training across all modalities, Ming-flash-omni Preview  employs a Dual-Balanced Routing Mechanism that combines an Auxiliary Load Balancing Loss with a Modality-Level Router Bias Update.
-- **Generative Segmentation-as-Editing Paradigm**: It unifies segmentation and editing into a semantics-preserving generation task, and achieves $0.90$ on GenEval, surpassing non-RL methods in fine-grained spatial control.
-- **Context-Aware and Dialectal Speech Recognition**: Ming-flash-omni Preview sets a new State-of-the-Art performance across all 12 ContextASR benchmarks, and it significantly improves recognition performance for 15 Chinese dialects.
+Compared to [Ming-flash-omni Preview](https://github.com/inclusionAI/Ming/tree/Ming-Lite-Omni-Preview), Ming-flash-omni 2.0 focuses on optimizing capabilities across the following key domains: 
+- **Expert-level Multimodal Cognition**: It accurately identifies plants and animals, recognizing cultural references (from regional cuisines to global landmarks), and delivering expert-level analysis of artifacts, including era, form, and craftsmanship. By synergizing high-resolution visual capture with a vast knowledge graph, the model achieves "vision-to-knowledge" synthesis, enabling superior knowledge understanding.
+
+
+- **Immersive and Controllable Unified Acoustic Synthesis**:  Ming-flash-omni 2.0 introduces a unified end-to-end acoustic generation pipeline that integrates Speech, Audio, and Music within a single channel. Leveraging Continuous Autoregression coupled with a Diffusion Transformer (DiT) head, the model enables zero-shot voice cloning and nuanced attribute control (e.g., emotion, timbre, and ambient atmosphere). This architecture facilitates a transition from simple text-to-speech to highly expressive, emotionally resonant, and immersive auditory experiences.
+
+
+- **High-Dynamic Controllable Image Generation and Manipulation**: Ming-flash-omni 2.0 features a native multi-task architecture that unifies segmentation, generation, and editing, allowing for sophisticated spatiotemporal semantic decoupling. It excels in high-dynamic content creation, including atmospheric reconstruction, seamless scene composition, and context-aware object removal. By maintaining texture coherence and spatial depth consistency, Ming-flash-omni 2.0 achieves state-of-the-art precision in complex image manipulation tasks.
 
 
 
 <p align="center">
-    <img src="https://mdn.alipayobjects.com/huamei_drbxn1/afts/img/MdHMSqYQCqAAAAAAVcAAAAgADkliAQFr/fmt.avif" width="800"/>
+    <img src="https://mdn.alipayobjects.com/portal_djnzel/afts/img/A*z9U5Qow8yi0AAAAAdJAAAAgAegAAAQ/original" width="800"/>
 <p>
 
 
 ## Use Cases
 
-### Steaming Video Conversation
+### Enhanced Multimodal Cognition & Free Modality Switching
+<video src="https://gw.alipayobjects.com/v/portal_djnzel/afts/video/A*1-YdSKhq13oAAAAAj8AAAAgAegAAAQ" controls width="50%" height="400" style="object-fit: contain; max-width: 100%;">
+    Enhanced Multimodal Cognition & Free Modality Switching
+</video>
 
+### Streaming Video Conversation
+<video src="https://gw.alipayobjects.com/v/portal_djnzel/afts/video/A*u1qXS4HgRHYAAAAAhSAAAAgAegAAAQ" controls width="50%" height="400" style="object-fit: contain; max-width: 100%;">
+    Streaming Video Conversation
+</video>
 
-https://github.com/user-attachments/assets/971ec7da-f2b9-4a07-bc32-61dd80c5c680
-
-
-### Audio Context ASR & Dialect ASR
-
-https://github.com/user-attachments/assets/86304095-3563-42e1-9aa4-192748172536
-
-
-### Audio Voice Clone
-
-https://github.com/user-attachments/assets/408b955d-1baf-44fb-a083-21c98ffe6b4a
-
-
+### Controllable Audio Generation
+<video src="https://gw.alipayobjects.com/v/portal_djnzel/afts/video/A*RyMaTYgt8oYAAAAAilAAAAgAegAAAQ" controls="controls" width="50%" height="auto" >
+    Audio Context ASR & Dialect ASR
+</video>
 
 ### Image Generation & Editing
-
-https://github.com/user-attachments/assets/71a74740-f4fc-42b8-8873-9e4378bd06bb
-
+<video src="https://gw.alipayobjects.com/v/portal_djnzel/afts/video/A*NVS4SIFElzwAAAAAgtAAAAgAegAAAQ" controls="controls" width="50%" height="auto" >
+    Controllable Image Generation
+</video> -->
 
 
 
 
 ## Model Downloads
 
-You can download our latest model from both Huggingface and ModelScope. For previous version model like [Ming-Lite-Omni v1.5](https://github.com/inclusionAI/Ming/tree/v1.5), Please refer to this [link](https://github.com/inclusionAI/Ming/tree/v1.5?tab=readme-ov-file#model-downloads).
+You can download our latest model from both Huggingface and ModelScope. For previous version model like [Ming-flash-omni-Preview](https://github.com/inclusionAI/Ming/tree/Ming-flash-omni-Preview), Please refer to this [link](https://github.com/inclusionAI/Ming/tree/Ming-flash-omni-Preview?tab=readme-ov-file#model-downloads).
 
 <div align="center">
 
 | **Model**               |   **Input modality**   | **Oput modality** |                                                                      **Download**                                                                      |
 |:------------------------|:----------------------:| :---------------: |:------------------------------------------------------------------------------------------------------------------------------------------------------:|
-| Ming-flash-omni Preview | Image,text,video,audio | Image,text,audio  |                           [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ming-flash-omni-Preview) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ming-flash-omni-Preview)                           |
+| Ming-flash-omni 2.0 | Image,text,video,audio | Image,text,audio  |                           [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ming-flash-omni-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ming-flash-omni-2.0)                           |
 </div>
-If you're in mainland China, we strongly recommend you to download our model from 🤖 <a href="https://www.modelscope.cn/models/inclusionAI/Ming-Lite-Omni-1.5">ModelScope</a>.
+If you're in mainland China, we strongly recommend you to download our model from 🤖 <a href="https://www.modelscope.cn/models/inclusionAI/Ming-flash-omni-2.0">ModelScope</a>.
 
 ```
 pip install modelscope
-modelscope download --model inclusionAI/Ming-flash-omni-Preview --local_dir inclusionAI/Ming-flash-omni-Preview  --revision master
+modelscope download --model inclusionAI/Ming-flash-omni-2.0 --local_dir inclusionAI/Ming-flash-omni-2.0  --revision master
 ```
 
 Note: This download process will take several minutes to several hours, depending on your network conditions.
 
-##  Evaluation
-Ming-flash-omni Preview shows competitive performance in vision-text understanding, image generation, audio understanding and text-to-speech capabilities. For detailed evaluation results，please refer to our [techinical report](https://arxiv.org/abs/2510.24821).  
 
 
 ## Environment Preparation
@@ -95,10 +97,6 @@ Ming-flash-omni Preview shows competitive performance in vision-text understandi
 ### Installation with pip
 ```shell
 pip install -r requirements.txt
-# for python 3.10
-pip install data/matcha_tts-0.0.5.1-cp310-cp310-linux_x86_64.whl 
-# for python 3.8 
-# pip install data/matcha_tts-0.0.5.1-cp38-cp38-linux_x86_64.whl
 pip install nvidia-cublas-cu12==12.4.5.8  # for H20 GPU
 ```
 
@@ -118,7 +116,7 @@ Download our model following [Model Downloads](#model-downloads)
 
 ```shell
 mkdir inclusionAI 
-ln -s /path/to/inclusionAI/Ming-flash-Omni-Preview inclusionAI/Ming-flash-Omni-Preview
+ln -s /path/to/inclusionAI/Ming-flash-omni-2.0 inclusionAI/Ming-flash-omni-2.0
 ```
 
 Step 3 - Enter the code directory, you can refer to the following codes to run the Ming-flash-omni model.
@@ -158,7 +156,7 @@ def split_model():
     return device_map
 
 # Load pre-trained model with optimized settings, this will take ~10 minutes
-model_path = "inclusionAI/Ming-flash-omni-Preview"
+model_path = "inclusionAI/Ming-flash-omni-2.0"
 model = BailingMM2NativeForConditionalGeneration.from_pretrained(
     model_path,
     torch_dtype=torch.bfloat16,
@@ -225,11 +223,12 @@ output_text = generate(messages, processor=processor, model=model)
 print(output_text)
 # Output:
 
-# 鹦鹉是一种非常聪明和社交性强的鸟类，它们的生活习性非常丰富和有趣。以下是一些关于鹦鹉生活习性的详细介绍：
-# ### 1. **栖息地**
-# 鹦鹉主要分布在热带和亚热带地区，包括非洲、亚洲、澳大利亚和南美洲。它们通常生活在森林、草原、沙漠和城市环境中。不同种类的鹦鹉对栖息地的要求有所不同，但大多数鹦鹉喜欢有丰富植被和水源的地方。
-# ### 2. **饮食**
-# 鹦鹉是杂食性动物，它们的饮食非常多样化。它们的食物包括种子、坚果、水果、蔬菜、花蜜和昆虫。鹦鹉的喙非常强壮，能够轻松地打开坚硬的果壳和坚果。一些鹦鹉还会吃泥土或沙子，以帮助消化和补充矿物质。
+# 鹦鹉是一种非常受欢迎的宠物鸟类，它们以其鲜艳的羽毛、聪明的头脑和模仿人类语言的能力而闻名。鹦鹉的生活习性非常丰富，以下是一些主要的习性：
+
+# 1. **社交性**：鹦鹉是高度社交的鸟类，它们在野外通常生活在群体中，与同伴互动、玩耍和寻找食物。在家庭环境中，鹦鹉需要与人类或其他鹦鹉进行定期的互动，以保持其心理健康。
+
+# 2. **智力**：鹦鹉拥有非常高的智力，它们能够学习各种技能，包括模仿人类语言、识别物体、解决问题等。这种智力使它们成为非常有趣的宠物。
+
 # ......
 ```
 
@@ -240,15 +239,6 @@ If you find our work helpful, feel free to give us a cite.
 
 ```bibtex
 
-@misc{Mingflash2025,
-      title  = {Ming-Flash-Omni: A Sparse, Unified Architecture for Multimodal Perception and Generation}, 
-      author = {Inclusion AI},
-      year = {2025},
-      eprint = {2510.24821},
-      archivePrefix = {arXiv},
-      url = {https://arxiv.org/abs/2510.24821}
-}
-
 @misc{Mingomni2025,
       title  = {Ming-Omni: A Unified Multimodal Model for Perception and Generation}, 
       author = {Inclusion AI},
@@ -256,6 +246,13 @@ If you find our work helpful, feel free to give us a cite.
       eprint = {2506.09344},
       archivePrefix = {arXiv},
       url = {https://arxiv.org/abs/2506.09344}
+}
+
+@article{ai2025ming,
+  title={Ming-flash-omni: A sparse, unified architecture for multimodal perception and generation},
+  author={Inclusion AI},
+  journal={arXiv preprint arXiv:2510.24821},
+  year={2025}
 }
 ```
 

@@ -46,7 +46,7 @@ class SD3Model_withMLP(nn.Module):
                      **kargs):
 
         encoder_hidden_states = self.mlp(encoder_hidden_states.to(self.mlp.fc1.weight.dtype)).to(self.dtype)
-         
+        
         pooled_projections = torch.nn.functional.adaptive_avg_pool1d(encoder_hidden_states.permute(0, 2, 1), output_size=1)
         pooled_projections = torch.nn.functional.adaptive_avg_pool1d(pooled_projections.squeeze(2), output_size=2048)
 
@@ -118,7 +118,10 @@ class SD3Loss(torch.nn.Module):
         self.ref_add_noise = ref_add_noise
         self.ref_add_noise_ratio = ref_add_noise_ratio
 
-        self.device = torch.device(torch.cuda.current_device())    
+        if device is not None:
+            self.device = torch.device(device)   
+        else:
+            self.device = torch.device(torch.cuda.current_device())    
 
         self.scheduler_path = scheduler_path
         self.vae = AutoencoderKL.from_pretrained(
@@ -221,6 +224,7 @@ class SD3Loss(torch.nn.Module):
         
         pooled_projections = torch.nn.functional.adaptive_avg_pool1d(encoder_hidden_states.permute(0, 2, 1), output_size=1)
         pooled_projections = torch.nn.functional.adaptive_avg_pool1d(pooled_projections.squeeze(2), output_size=2048)
+        
         image = self.pipelines(
             prompt_embeds=encoder_hidden_states,
             negative_prompt_embeds=negative_encoder_hidden_states if negative_encoder_hidden_states is not None else encoder_hidden_states * 0,
@@ -241,6 +245,6 @@ class SD3Loss(torch.nn.Module):
             ref_add_noise_ratio=self.ref_add_noise_ratio,
             use_refiner=self.use_refiner,
             use_qwpe=self.use_qwpe,
-        ).images[0]
+        ).images
 
         return image  

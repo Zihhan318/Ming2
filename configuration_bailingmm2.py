@@ -15,7 +15,7 @@
 
 from transformers import PretrainedConfig
 from configuration_whisper_encoder import WhisperEncoderConfig
-from qwen2_5_vit import Qwen2_5_VLVisionConfig
+from qwen3_moe_vit import Qwen3VLMoeVisionConfig
 from configuration_bailing_moe_v2 import BailingMoeV2Config
 
 
@@ -26,12 +26,12 @@ class BailingMM2Config(PretrainedConfig):
         self,
         mlp_depth=1,
         llm_config: BailingMoeV2Config = None,
-        vision_config: Qwen2_5_VLVisionConfig = None,
+        vision_config: Qwen3VLMoeVisionConfig = None,
         audio_config: WhisperEncoderConfig = None,
         **kwargs
     ):
         self.audio_config = WhisperEncoderConfig(**audio_config) if isinstance(audio_config, dict) else audio_config
-        self.vision_config = Qwen2_5_VLVisionConfig(**vision_config) if isinstance(vision_config, dict) else vision_config
+        self.vision_config = Qwen3VLMoeVisionConfig(**vision_config) if isinstance(vision_config, dict) else vision_config
         self.llm_config = BailingMoeV2Config(**llm_config) if isinstance(llm_config, dict) else llm_config
         self.mlp_depth = mlp_depth
         super().__init__(**kwargs)
