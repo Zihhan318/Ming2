@@ -19,6 +19,7 @@ The newly released Ming-flash-omni 2.0 leverages the [Ling-2.0](https://github.c
 <p>
 
 
+
 ## 📌 Updates
 * [2026.02.11] 🔥 We release the official version of Ming-flash-omni 2.0, an open-source SOTA omni-MLLM that pushes the boundaries of multimodal understanding and synthesis.
 * [2025.10.27] 🔥 We release the preview version of Ming-flash-omni：[Ming-flash-omni Preview](https://github.com/inclusionAI/Ming/tree/main).
@@ -65,8 +66,7 @@ Compared to [Ming-flash-omni Preview](https://github.com/inclusionAI/Ming/tree/M
 ### Image Generation & Editing
 <video src="https://gw.alipayobjects.com/v/portal_djnzel/afts/video/A*NVS4SIFElzwAAAAAgtAAAAgAegAAAQ" controls="controls" width="50%" height="auto" >
     Controllable Image Generation
-</video> -->
-
+</video> 
 
 
 
