@@ -15,9 +15,8 @@ The newly released Ming-flash-omni 2.0 leverages the [Ling-2.0](https://github.c
 
 
 <p align="center">
-    <img src="https://mdn.alipayobjects.com/portal_djnzel/afts/img/A*G0UnSIs2SSAAAAAAgCAAAAgAegAAAQ/original" width="800"/>
+    <img src="https://mdn.alipayobjects.com/huamei_xg7bx2/afts/img/c1qcRIb3qH4AAAAAgCAAAAgADhHHAQFr/fmt.avif" width="800"/>
 <p>
-
 
 
 ## 📌 Updates
@@ -42,31 +41,32 @@ Compared to [Ming-flash-omni Preview](https://github.com/inclusionAI/Ming/tree/M
 
 
 <p align="center">
-    <img src="https://mdn.alipayobjects.com/portal_djnzel/afts/img/A*z9U5Qow8yi0AAAAAdJAAAAgAegAAAQ/original" width="800"/>
+    <img src="https://mdn.alipayobjects.com/huamei_xg7bx2/afts/img/WxgUSrdZVj8AAAAAdJAAAAgADhHHAQFr/original" width="800"/>
 <p>
 
 
 ## Use Cases
 
 ### Enhanced Multimodal Cognition & Free Modality Switching
-<video src="https://gw.alipayobjects.com/v/portal_djnzel/afts/video/A*1-YdSKhq13oAAAAAj8AAAAgAegAAAQ" controls width="50%" height="400" style="object-fit: contain; max-width: 100%;">
+<video src="https://gw.alipayobjects.com/v/huamei_xg7bx2/afts/video/89ldR4x2Gh4AAAAAgHAAAAgAfoeUAQBr" controls width="50%" height="400" style="object-fit: contain; max-width: 100%;">
     Enhanced Multimodal Cognition & Free Modality Switching
 </video>
 
 ### Streaming Video Conversation
-<video src="https://gw.alipayobjects.com/v/portal_djnzel/afts/video/A*u1qXS4HgRHYAAAAAhSAAAAgAegAAAQ" controls width="50%" height="400" style="object-fit: contain; max-width: 100%;">
+<video src="https://gw.alipayobjects.com/v/huamei_xg7bx2/afts/video/vzMASLimtWkAAAAAgKAAAAgAfoeUAQBr" controls width="50%" height="400" style="object-fit: contain; max-width: 100%;">
     Streaming Video Conversation
 </video>
 
 ### Controllable Audio Generation
-<video src="https://gw.alipayobjects.com/v/portal_djnzel/afts/video/A*RyMaTYgt8oYAAAAAilAAAAgAegAAAQ" controls="controls" width="50%" height="auto" >
+<video src="https://gw.alipayobjects.com/v/huamei_xg7bx2/afts/video/0uVSRIpQDgEAAAAAgGAAAAgAfoeUAQBr" controls="controls" width="50%" height="auto" >
     Audio Context ASR & Dialect ASR
 </video>
 
 ### Image Generation & Editing
-<video src="https://gw.alipayobjects.com/v/portal_djnzel/afts/video/A*NVS4SIFElzwAAAAAgtAAAAgAegAAAQ" controls="controls" width="50%" height="auto" >
+<video src="https://gw.alipayobjects.com/v/huamei_xg7bx2/afts/video/BcJjQLnLz7IAAAAAgtAAAAgADhHHAQFr" controls="controls" width="50%" height="auto" >
     Controllable Image Generation
-</video> 
+</video>
+
 
 
 
