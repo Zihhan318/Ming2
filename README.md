@@ -47,23 +47,23 @@ Compared to [Ming-flash-omni Preview](https://github.com/inclusionAI/Ming/tree/M
 
 ## Use Cases
 
-### Enhanced Multimodal Cognition & Free Modality Switching
-<video src="https://gw.alipayobjects.com/v/huamei_xg7bx2/afts/video/89ldR4x2Gh4AAAAAgHAAAAgAfoeUAQBr" controls width="50%" height="400" style="object-fit: contain; max-width: 100%;">
+### Enhanced Multimodal Cognition & Free Modality Switching  
+<video src="https://github.com/user-attachments/assets/147b9594-e492-4beb-a0db-b5c810135663" controls width="50%" height="400" style="object-fit: contain; max-width: 100%;">
     Enhanced Multimodal Cognition & Free Modality Switching
 </video>
 
-### Streaming Video Conversation
-<video src="https://gw.alipayobjects.com/v/huamei_xg7bx2/afts/video/vzMASLimtWkAAAAAgKAAAAgAfoeUAQBr" controls width="50%" height="400" style="object-fit: contain; max-width: 100%;">
+### Streaming Video Conversation  
+<video src="https://github.com/user-attachments/assets/b1afb34e-8877-497c-85f3-82cd7cf618db" controls width="50%" height="400" style="object-fit: contain; max-width: 100%;">
     Streaming Video Conversation
 </video>
 
 ### Controllable Audio Generation
-<video src="https://gw.alipayobjects.com/v/huamei_xg7bx2/afts/video/0uVSRIpQDgEAAAAAgGAAAAgAfoeUAQBr" controls="controls" width="50%" height="auto" >
+<video src="https://github.com/user-attachments/assets/6b5d504f-86a3-4121-97c9-0aa9ea9abaa4" controls="controls" width="50%" height="auto" >
     Audio Context ASR & Dialect ASR
 </video>
 
 ### Image Generation & Editing
-<video src="https://gw.alipayobjects.com/v/huamei_xg7bx2/afts/video/BcJjQLnLz7IAAAAAgtAAAAgADhHHAQFr" controls="controls" width="50%" height="auto" >
+<video src="https://github.com/user-attachments/assets/8d0af9cc-e0dc-440c-9963-b589d6396917" controls="controls" width="50%" height="auto" >
     Controllable Image Generation
 </video>
 
