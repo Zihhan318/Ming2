@@ -20,7 +20,7 @@ The newly released Ming-flash-omni 2.0 leverages the [Ling-2.0](https://github.c
 
 
 ## 📌 Updates
-* [2026.02.11] 🔥 We release the official version of Ming-flash-omni 2.0, an open-source SOTA omni-MLLM that pushes the boundaries of multimodal understanding and synthesis.
+* [2026.02.11] 🔥 We release the official version of [Ming-flash-omni 2.0](https://mp.weixin.qq.com/s/hz2fsH1DGpp2zpY-Yngsog), an open-source SOTA omni-MLLM that pushes the boundaries of multimodal understanding and synthesis.
 * [2025.10.27] 🔥 We release the preview version of Ming-flash-omni：[Ming-flash-omni Preview](https://github.com/inclusionAI/Ming/tree/main).
 * [2025.07.15] 🔥 We release [Ming-lite-omni v1.5](https://github.com/inclusionAI/Ming/tree/v1.5) with significant improvements across all modalities.
 * [2025.06.12] 🔥 Our [Technical Report](https://arxiv.org/abs/2506.09344) is in public on arxiv.
