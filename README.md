@@ -29,7 +29,7 @@ The newly released Ming-flash-omni 2.0 leverages the [Ling-2.0](https://github.c
 
 
 ## Key Features
-Compared to [Ming-flash-omni Preview](https://github.com/inclusionAI/Ming/tree/Ming-Lite-Omni-Preview), Ming-flash-omni 2.0 focuses on optimizing capabilities across the following key domains: 
+Compared to [Ming-flash-omni Preview](https://github.com/inclusionAI/Ming/tree/Ming-flash-omni-Preview), Ming-flash-omni 2.0 focuses on optimizing capabilities across the following key domains: 
 - **Expert-level Multimodal Cognition**: It accurately identifies plants and animals, recognizing cultural references (from regional cuisines to global landmarks), and delivering expert-level analysis of artifacts, including era, form, and craftsmanship. By synergizing high-resolution visual capture with a vast knowledge graph, the model achieves "vision-to-knowledge" synthesis, enabling superior knowledge understanding.
 
 
