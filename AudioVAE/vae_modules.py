@@ -72,6 +72,9 @@ class Encoder(nn.Module):
     def __init__(self, encoder_args, input_dim=320, hop_size=320, latent_dim=64, patch_size=-1):
         super().__init__()
         config = Qwen2Config.from_dict(config_dict=encoder_args)
+        config._attn_implementation = "sdpa"
+        config.use_sliding_window = False
+        config.sliding_window = None
         self.encoder = Qwen2Model(config)
         self.input_dim = input_dim
         self.hop_size = hop_size
@@ -83,6 +86,9 @@ class Encoder(nn.Module):
         self.patch_size = patch_size
         if patch_size != -1:
             config.num_hidden_layers = 4
+            config._attn_implementation = "sdpa"
+            config.use_sliding_window = False
+            config.sliding_window = None
             self.aggregator = Qwen2Model(config)
             self.cls_embed = nn.Parameter(torch.rand(1, 1, config.hidden_size))
             self.cls_embed.data.normal_(0, 0.02)
@@ -132,6 +138,9 @@ class Decoder(nn.Module):
     def __init__(self, decoder_args, output_dim=320, latent_dim=64, patch_size=-1):
         super().__init__()
         config = Qwen2Config.from_dict(config_dict=decoder_args)
+        config._attn_implementation = "sdpa"
+        config.use_sliding_window = False
+        config.sliding_window = None
         self.decoder = Qwen2Model(config)
         self.output_dim = output_dim
         self.latent_dim = latent_dim

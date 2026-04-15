@@ -33,7 +33,10 @@ from diffusers.models.embeddings import CombinedTimestepTextProjEmbeddings, Patc
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
 
-from IPython import embed
+try:
+    from IPython import embed
+except ImportError:
+    embed = None
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 

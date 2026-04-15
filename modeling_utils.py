@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from typing import Optional
-from whisper.model import AudioEncoder
 
 class Transpose(nn.Module):
     def __init__(self, dim0: int, dim1: int):
@@ -93,7 +92,6 @@ def encode_audio_segments(
         assert wav_feats is not None and wav_feats_lengths is not None
         # Unwrap the features so the feature of each waveform is placed at an independent row.
         feat_segs_batch, feat_seg_lengths = unwrap_feats(wav_feats, wav_feats_lengths)
-        assert isinstance(encoder, AudioEncoder)
         # for whisper encoder
         # feat_segs_batch: [B, T, n_mels]
         # feat_seg_lengths: [B]

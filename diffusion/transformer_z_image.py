@@ -114,10 +114,15 @@ class ZSingleStreamAttnProcessor:
         # Apply RoPE
         def apply_rotary_emb(x_in: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
             with torch.amp.autocast("cuda", enabled=False):
-                x = torch.view_as_complex(x_in.float().reshape(*x_in.shape[:-1], -1, 2))
-                freqs_cis = freqs_cis.unsqueeze(2)
-                x_out = torch.view_as_real(x * freqs_cis).flatten(3)
-                return x_out.type_as(x_in)  # todo
+                # Keep this path real-valued for Ascend/NPU compatibility.
+                # The original complex64 formulation is mathematically equivalent,
+                # but indexing complex tensors triggers unsupported kernels on torch_npu.
+                x_parts = x_in.float().reshape(*x_in.shape[:-1], -1, 2)
+                cos = freqs_cis[..., 0].unsqueeze(2).unsqueeze(-1)
+                sin = freqs_cis[..., 1].unsqueeze(2).unsqueeze(-1)
+                x_rotated = torch.stack((-x_parts[..., 1], x_parts[..., 0]), dim=-1)
+                x_out = (x_parts * cos + x_rotated * sin).flatten(3)
+                return x_out.type_as(x_in)
 
         if freqs_cis is not None:
             query = apply_rotary_emb(query, freqs_cis)
@@ -127,9 +132,11 @@ class ZSingleStreamAttnProcessor:
         dtype = query.dtype
         query, key = query.to(dtype), key.to(dtype)
 
-        # From [batch, seq_len] to [batch, 1, 1, seq_len] -> broadcast to [batch, heads, seq_len, seq_len]
+        # Ascend FlashAttention does not accept broadcast-only masks like [B, 1, 1, S].
+        # Materialize a [B, 1, S, S] bool mask instead.
         if attention_mask is not None and attention_mask.ndim == 2:
             attention_mask = attention_mask[:, None, None, :]
+            attention_mask = attention_mask.expand(-1, 1, query.shape[1], -1)
 
         # Compute joint attention
         hidden_states = dispatch_attention_fn(
@@ -282,7 +289,9 @@ class RopeEmbedder:
                 freqs = 1.0 / (theta ** (torch.arange(0, d, 2, dtype=torch.float64, device="cpu") / d))
                 timestep = torch.arange(e, device=freqs.device, dtype=torch.float64)
                 freqs = torch.outer(timestep, freqs).float()
-                freqs_cis_i = torch.polar(torch.ones_like(freqs), freqs).to(torch.complex64)  # complex64
+                # Store RoPE frequencies as explicit cos/sin pairs instead of complex64
+                # so the same tensors can be indexed on NPU safely.
+                freqs_cis_i = torch.stack((torch.cos(freqs), torch.sin(freqs)), dim=-1)
                 freqs_cis.append(freqs_cis_i)
 
             return freqs_cis
@@ -304,7 +313,7 @@ class RopeEmbedder:
         for i in range(len(self.axes_dims)):
             index = ids[:, i]
             result.append(self.freqs_cis[i][index])
-        return torch.cat(result, dim=-1)
+        return torch.cat(result, dim=1)
 
 
 class ZImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin):

@@ -2,6 +2,7 @@
 # coding=utf-8
 # Copyright (c) Ant Group. All rights reserved.
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -9,11 +10,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from IPython import embed
 from PIL import Image
 
 # from modeling_bailing_talker import BailingTalkerForConditionalGeneration
-from modeling_whisper_encoder import WhisperAudioEncoder
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
 from transformers.utils import logging
@@ -24,6 +23,7 @@ from bailingmm_utils import process_ratio, find_first_index_of_consecutive_ones,
 import os
 import torchvision
 from copy import deepcopy
+import time
 
 # vision encoder
 from qwen3_moe_vit import Qwen3MoeVisionTransformer
@@ -31,6 +31,44 @@ from qwen3_moe_vit import Qwen3MoeVisionTransformer
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "BailingMM2Config"
+
+
+def _resolve_runtime_device(device=None) -> torch.device:
+    if isinstance(device, torch.device):
+        return device
+    if isinstance(device, str):
+        return torch.device(device)
+    if isinstance(device, int):
+        if torch.cuda.is_available():
+            return torch.device(f"cuda:{device}")
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            return torch.device(f"npu:{device}")
+    if isinstance(device, dict):
+        for key in ("model", "llm", "vision", "talker", ""):
+            target = device.get(key)
+            if target is not None:
+                return _resolve_runtime_device(target)
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        current_idx = torch.npu.current_device() if hasattr(torch.npu, "current_device") else 0
+        return torch.device(f"npu:{current_idx}")
+    if torch.cuda.is_available():
+        return torch.device(f"cuda:{torch.cuda.current_device()}")
+    return torch.device("cpu")
+
+
+def _infer_autocast_device_type(module: Optional[nn.Module] = None) -> str:
+    if module is not None:
+        try:
+            return next(module.parameters()).device.type
+        except (StopIteration, AttributeError):
+            pass
+    return _resolve_runtime_device().type
+
+
+def _autocast_context(device_type: str, dtype: torch.dtype = torch.bfloat16, enabled: bool = True):
+    if not enabled or device_type == "cpu":
+        return nullcontext()
+    return torch.autocast(device_type=device_type, dtype=dtype)
 
 
 class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
@@ -58,8 +96,18 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
         if self.config.vision_config:
             self.vision = Qwen3MoeVisionTransformer(self.config.vision_config)
 
+        self.audio = None
         if self.config.audio_config:
-            self.audio = WhisperAudioEncoder(**self.config.audio_config.whisper_encoder_config)
+            try:
+                from modeling_whisper_encoder import WhisperAudioEncoder
+            except ImportError:
+                logger.warning(
+                    "Audio dependencies are unavailable; continuing without audio support. "
+                    "Install whisper to enable audio inputs."
+                )
+                self.config.audio_config = None
+            else:
+                self.audio = WhisperAudioEncoder(**self.config.audio_config.whisper_encoder_config)
 
         self.model = BailingMoeV2ForCausalLM(self.config.llm_config)
 
@@ -92,7 +140,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
 
 
     def extract_image_feature(self, pixel_values, grid_thw):
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+        with _autocast_context(_infer_autocast_device_type(self), dtype=torch.bfloat16):
             if self.vision.use_deepstack:
                 image_embeds, deepstack_features = self.vision(pixel_values, grid_thw=grid_thw)
             else:
@@ -103,6 +151,11 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
 
 
     def extract_audio_feature(self, audio_feats, audio_feats_lengths, use_whisper_encoder=False):
+        if self.audio is None or self.config.audio_config is None:
+            raise ImportError(
+                "Audio inputs require optional whisper dependencies. "
+                "Install whisper before running audio inference."
+            )
         audio_embeds, _, audio_embeds_lengths = encode_audio_segments(
             encoder=self.audio,
             proj_layer=self.linear_proj_audio,
@@ -156,22 +209,40 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
         image_embeds, video_embeds, audio_embeds, audio_embeds_lengths = None, None, None, None
 
         if image_gen:
+            image_gen_stage_timings = {}
+
+            def mark_image_gen_stage(stage_name: str, start_time: float):
+                image_gen_stage_timings[stage_name] = time.time() - start_time
+
+            def sync_device():
+                if hasattr(torch, "npu") and torch.npu.is_available():
+                    torch.npu.synchronize()
+                elif torch.cuda.is_available():
+                    torch.cuda.synchronize()
+
+            sync_device()
+            image_gen_overall_start = time.perf_counter()
+            sync_device()
+            llm_condition_start = time.perf_counter()
             if image_gen_condition_embeds is not None:
+                stage_start = time.time()
                 condition_embeds = image_gen_condition_embeds
                 if image_gen_negative_condition_embeds is None:
                     image_gen_negative_condition_embeds = condition_embeds * 0.0
                 
                 negative_condition_embeds = image_gen_negative_condition_embeds
+                mark_image_gen_stage("condition_embeds_prepare", stage_start)
             else:
-
-
+                stage_start = time.time()
                 if image_gen_llm_hidden_states is None:
                     assert self.model is not None
                     assert self.vision is not None
                     if pixel_values is not None:
                         image_embeds = self.extract_image_feature(pixel_values, grid_thw=image_grid_thw)
+                mark_image_gen_stage("extract_image_feature", stage_start)
                 assert self.loaded_image_gen_modules is True, "please add `load_image_gen=True` in from_pretrained() method"
                 assert position_ids is None
+                stage_start = time.time()
                 condition_embeds = self.get_condition_embeds_for_image_gen(
                     input_ids=input_ids, 
                     attention_mask=attention_mask,
@@ -190,11 +261,13 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                     image_grid_thw=image_grid_thw,
                     llm_hidden_states=image_gen_negative_llm_hidden_states,
                 ) if ((image_gen_negative_input_ids is not None) or (image_gen_negative_llm_hidden_states is not None)) else condition_embeds * 0.0
+                mark_image_gen_stage("condition_embeds_prepare", stage_start)
 
 
                 using_byt5 = False if image_gen_text is None else any([len(i) > 0 for i in image_gen_text]) 
                 byt5_prompt_embeds = None
                 if self.byt5_model is not None and using_byt5:
+                    stage_start = time.time()
                     byt5_text_inputs = self.byt5_tokenizer(
                         image_gen_text,
                         padding="max_length",
@@ -223,13 +296,23 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                     byt5_prompt_embeds = byt5_prompt_embeds[0]
                     byt5_prompt_embeds = self.byt5_mapper(byt5_prompt_embeds, byt5_attention_mask)
                     byt5_prompt_embeds = byt5_prompt_embeds * byt5_attention_mask.unsqueeze(-1)
+                    mark_image_gen_stage("byt5_prepare", stage_start)
+                else:
+                    image_gen_stage_timings["byt5_prepare"] = 0.0
 
                 if byt5_prompt_embeds is not None:
                     condition_embeds = torch.cat((condition_embeds, byt5_prompt_embeds), dim=1)
                     negative_condition_embeds = torch.cat((negative_condition_embeds, byt5_prompt_embeds * 0.0), dim=1)
 
+                sync_device()
+                image_gen_stage_timings["llm_condition_total"] = time.perf_counter() - llm_condition_start
+
                 if image_gen_only_extract_hidden_states:
                     return condition_embeds, negative_condition_embeds
+
+            if "llm_condition_total" not in image_gen_stage_timings:
+                sync_device()
+                image_gen_stage_timings["llm_condition_total"] = time.perf_counter() - llm_condition_start
 
             if image_gen_height is None or image_gen_width is None:
                 if isinstance(image_gen_highres, int):
@@ -256,7 +339,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 assert len(image_gen_height) == condition_embeds.shape[0]
                 assert len(image_gen_width)  == condition_embeds.shape[0]
 
-
+            stage_start = time.time()
             image_gen_height_diffusion_list = []
             image_gen_width_diffusion_list = []
             image_gen_output_resize_height = []
@@ -277,7 +360,9 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
 
             if image_gen_pixel_values_reference is not None:
                 assert (image_gen_height, image_gen_width) == (image_gen_pixel_values_reference.shape[-2], image_gen_pixel_values_reference.shape[-1])
+            mark_image_gen_stage("size_prepare", stage_start)
 
+            stage_start = time.time()
             if image_gen_seed is None or image_gen_seed < 0:
                 from datetime import datetime
                 image_gen_seed = datetime.now().microsecond % 1000
@@ -305,11 +390,53 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             print("condition_embeds.shape: ", condition_embeds.shape)
             print("image_gen_output_resize_height: ", image_gen_output_resize_height)
             print("image_gen_output_resize_width: ", image_gen_output_resize_width)
-              
+            
+            stage_start = time.time()
             image = self.diffusion_loss.sample(
                 **sample_kwargs,
             )
+            mark_image_gen_stage("diffusion_sample", stage_start)
+            image_gen_stage_timings["dit_total"] = getattr(self.diffusion_loss, "dit_total", 0.0)
+            image_gen_stage_timings["vae_total"] = getattr(self.diffusion_loss, "vae_total", 0.0)
+
+            stage_start = time.time()
             image = [i.resize((w, h), Image.LANCZOS) for i, w, h in zip(image, image_gen_output_resize_width, image_gen_output_resize_height)]
+            mark_image_gen_stage("post_resize", stage_start)
+
+            sync_device()
+            image_gen_stage_timings["total_image_gen"] = time.perf_counter() - image_gen_overall_start
+            image_gen_stage_timings["modules_total"] = (
+                image_gen_stage_timings.get("llm_condition_total", 0.0)
+                + image_gen_stage_timings.get("dit_total", 0.0)
+                + image_gen_stage_timings.get("vae_total", 0.0)
+            )
+            image_gen_stage_timings["other_total"] = (
+                image_gen_stage_timings["total_image_gen"]
+                - image_gen_stage_timings["modules_total"]
+            )
+
+            total_image_gen = max(image_gen_stage_timings["total_image_gen"], 1e-12)
+            print(
+                f"image_gen_stage_llm_condition_total: {image_gen_stage_timings['llm_condition_total']:.2f}s "
+                f"({image_gen_stage_timings['llm_condition_total'] / total_image_gen * 100:.2f}%)"
+            )
+            print(
+                f"image_gen_stage_dit_total: {image_gen_stage_timings['dit_total']:.2f}s "
+                f"({image_gen_stage_timings['dit_total'] / total_image_gen * 100:.2f}%)"
+            )
+            print(
+                f"image_gen_stage_vae_total: {image_gen_stage_timings['vae_total']:.2f}s "
+                f"({image_gen_stage_timings['vae_total'] / total_image_gen * 100:.2f}%)"
+            )
+            print(
+                f"image_gen_stage_modules_total: {image_gen_stage_timings['modules_total']:.2f}s "
+                f"({image_gen_stage_timings['modules_total'] / total_image_gen * 100:.2f}%)"
+            )
+            print(
+                f"image_gen_stage_other_total: {image_gen_stage_timings['other_total']:.2f}s "
+                f"({image_gen_stage_timings['other_total'] / total_image_gen * 100:.2f}%)"
+            )
+            print(f"image_gen_stage_total: {image_gen_stage_timings['total_image_gen']:.2f}s")
 
             if not image_gen_return_batch and len(image) == 1:
                 image = image[0]
@@ -320,11 +447,12 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             image_embeds = self.extract_image_feature(pixel_values, grid_thw=image_grid_thw)
         if pixel_values_videos is not None:
             video_embeds = self.extract_image_feature(pixel_values_videos, grid_thw=video_grid_thw)
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+        autocast_device_type = _infer_autocast_device_type(self.model)
+        with _autocast_context(autocast_device_type, dtype=torch.bfloat16):
             if audio_feats is not None:
                 audio_embeds, audio_embeds_lengths = self.extract_audio_feature(audio_feats, audio_feats_lengths, use_whisper_encoder=True)
 
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+        with _autocast_context(autocast_device_type, dtype=torch.bfloat16):
             outputs = self.model.generate(
                 input_ids=input_ids,
                 query_embeds_image=image_embeds,
@@ -425,9 +553,9 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
         if self.model is not None:
             device = self.model.device
         elif device is not None:
-            device = torch.device(device)
+            device = _resolve_runtime_device(device)
         else:
-            device = torch.device(torch.cuda.current_device())
+            device = _resolve_runtime_device()
 
         print("load_image_gen_modules", device)
         from transformers import AutoModelForCausalLM
@@ -598,7 +726,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             from modeling_bailing_talker import BailingTalker2
             from AudioVAE.modeling_audio_vae import AudioVAE
             dtype = kwargs.get('torch_dtype', torch.float32)
-            device = f'cuda:{kwargs.get("device_map", {}).get("talker", 0)}'
+            device = _resolve_runtime_device(kwargs.get("device_map", {}))
             model.talker = BailingTalker2.from_pretrained(f'{pretrained_model_name_or_path}/talker')
             model.talker.to(dtype=dtype, device=device)
             model.talker_vae = AudioVAE.from_pretrained(f'{pretrained_model_name_or_path}/talker/vae')
@@ -770,7 +898,8 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 self.config.llm_config.image_patch_token,
             )
             
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            autocast_device_type = _infer_autocast_device_type(self.model)
+            with _autocast_context(autocast_device_type, dtype=torch.bfloat16):
                 if image_embeds is None or input_ids.size(1) == 1:
                     words_embeddings = self.model.get_input_embeddings()(input_ids.clip(0, self.model.get_input_embeddings().weight.shape[0] - 1))
                     image_mask = None
@@ -807,7 +936,8 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
         else:
             hidden_states = llm_hidden_states
 
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+        autocast_device_type = _infer_autocast_device_type(self.model)
+        with _autocast_context(autocast_device_type, dtype=torch.bfloat16):
             gen_mask = gen_mask.unsqueeze(-1).expand(gen_mask.shape[0], gen_mask.shape[1], hidden_states.shape[-1]).to(hidden_states.device).bool()
             hidden_states_gen = torch.masked_select(hidden_states, gen_mask).view(hidden_states.shape[0], -1, hidden_states.shape[-1])
             # 分解hidden_states为不同尺度的表示
@@ -822,7 +952,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             scale_hidden = hidden_states_gen[:, scale_start_idx : scale_end_idx, :]
             scale_embeds = self.proj_in(scale_hidden)
             seq_shape = scale_embeds.shape
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            with _autocast_context(autocast_device_type, dtype=torch.bfloat16):
                 scale_embeds = self.connector(
                     inputs_embeds=scale_embeds, 
                     attention_mask=torch.ones(seq_shape[0],1,seq_shape[1],seq_shape[1]).to(scale_embeds.device), 

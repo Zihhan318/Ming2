@@ -1,0 +1,37 @@
+<svg width="1180" height="1014" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 1014" aria-label="Code map">
+  <rect x="0" y="0" width="1180" height="1014" rx="18" fill="#fffdf8" stroke="#d5c9b8"/>
+  <text x="28" y="34" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">/home/zzh/Ming2</text>
+  <text x="28" y="62" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">├── Main model entry</text>
+  <text x="28" y="90" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── config.json</text>
+  <text x="28" y="118" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── configuration_bailingmm2.py</text>
+  <text x="28" y="146" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   └── modeling_bailingmm2.py</text>
+  <text x="28" y="174" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">├── Unified multimodal backbone</text>
+  <text x="28" y="202" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── modeling_bailing_moe_v2.py</text>
+  <text x="28" y="230" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   └── configuration_bailing_moe_v2.py</text>
+  <text x="28" y="258" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">├── Vision path</text>
+  <text x="28" y="286" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── qwen3_moe_vit.py</text>
+  <text x="28" y="314" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   └── image_processing_bailingmm2.py</text>
+  <text x="28" y="342" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">├── Audio understanding path</text>
+  <text x="28" y="370" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── modeling_whisper_encoder.py</text>
+  <text x="28" y="398" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── audio_processing_bailingmm2.py</text>
+  <text x="28" y="426" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   └── configuration_whisper_encoder.py</text>
+  <text x="28" y="454" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">├── Processor / tokenizer / chat</text>
+  <text x="28" y="482" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── processing_bailingmm2.py</text>
+  <text x="28" y="510" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── tokenization_bailing.py</text>
+  <text x="28" y="538" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   └── chat_format.py</text>
+  <text x="28" y="566" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">├── Image generation branch</text>
+  <text x="28" y="594" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── diffusion/</text>
+  <text x="28" y="622" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   └── bizgen/</text>
+  <text x="28" y="650" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">├── Talker / unified acoustic generation</text>
+  <text x="28" y="678" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── modeling_bailing_talker.py</text>
+  <text x="28" y="706" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── talker_module/</text>
+  <text x="28" y="734" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   ├── talker_tn/</text>
+  <text x="28" y="762" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   └── front/</text>
+  <text x="28" y="790" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">├── AudioVAE</text>
+  <text x="28" y="818" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">│   └── AudioVAE/</text>
+  <text x="28" y="846" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">└── Inference and validation scripts</text>
+  <text x="28" y="874" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">    ├── test_infer_npu.py</text>
+  <text x="28" y="902" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">    ├── test_infer_imagegen_npu.py</text>
+  <text x="28" y="930" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">    ├── test_talker_npu.py</text>
+  <text x="28" y="958" font-family="monospace" font-size="18" fill="#1c1a17" xml:space="preserve">    └── examples/vllm_demo.py</text>
+</svg>

@@ -44,7 +44,7 @@ from PIL import Image
 
 def split_model():
     device_map = {}
-    world_size = torch.cuda.device_count() - 1
+    world_size = torch.cuda.device_count() - 1       # 至少需要两张卡    # torch.cuda.* 吃到 CUDA_VISIBLE_DEVICES=0,1,2,3 相关的调用
     print(world_size)
     num_layers = 32
     layer_per_gpu = num_layers // world_size
@@ -67,7 +67,7 @@ def split_model():
     device_map['model.model.norm.weight'] = 0
     device_map['model.lm_head.weight'] = 0
     device_map['model.model.norm'] = 0
-    device_map[f'model.model.layers.{num_layers - 1}'] = 0
+    device_map[f'model.model.layers.{num_layers - 1}'] = 0         # 最后一层放回0卡
     return device_map
 
 
@@ -77,7 +77,7 @@ if __name__ == '__main__':
     #"/nativemm/share/cpfs/weilong.cwl/checkpoints/megatron_flashv2.0_sft1_hf_metax/" #"."
     code_path = "."
     processor = AutoProcessor.from_pretrained(code_path, trust_remote_code=True)
-    save_dir = "./generated_imgs"
+    sa如果ve_dir = "./generated_imgs"
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
 

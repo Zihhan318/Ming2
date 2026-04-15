@@ -1,0 +1,39 @@
+<svg width="620" height="480" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 480" aria-label="Talker flow">
+            <defs>
+              <marker id="arrow4" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#6d5a47"></path>
+              </marker>
+            </defs>
+            <rect x="25" y="28" width="130" height="48" rx="12" fill="#f8e8d7" stroke="#caa57c"></rect>
+            <text x="90" y="57" text-anchor="middle" font-size="14">prompt wav</text>
+            <rect x="185" y="28" width="140" height="48" rx="12" fill="#efe8fa" stroke="#aa93cc"></rect>
+            <text x="255" y="57" text-anchor="middle" font-size="14">Speaker Extractor</text>
+            <rect x="355" y="28" width="165" height="48" rx="12" fill="#efe8fa" stroke="#aa93cc"></rect>
+            <text x="437" y="57" text-anchor="middle" font-size="14">BailingTalker2</text>
+
+            <rect x="355" y="116" width="165" height="44" rx="12" fill="#f5ead9" stroke="#b99461"></rect>
+            <text x="437" y="142" text-anchor="middle" font-size="14">Qwen2 prefill / decode</text>
+            <rect x="355" y="196" width="165" height="44" rx="12" fill="#f2ecfb" stroke="#b39ccf"></rect>
+            <text x="437" y="222" text-anchor="middle" font-size="14">CFM + DiT sampler</text>
+            <rect x="355" y="276" width="165" height="44" rx="12" fill="#f4effb" stroke="#b9a7d3"></rect>
+            <text x="437" y="302" text-anchor="middle" font-size="14">Aggregator + stop head</text>
+            <rect x="355" y="356" width="165" height="44" rx="12" fill="#eaf0fb" stroke="#88a0c9"></rect>
+            <text x="437" y="382" text-anchor="middle" font-size="14">AudioVAE decode</text>
+            <rect x="355" y="432" width="165" height="32" rx="10" fill="#f0f0f0" stroke="#aaa"></rect>
+            <text x="437" y="453" text-anchor="middle" font-size="13">waveform stream</text>
+
+            <g stroke="#6d5a47" stroke-width="2" marker-end="url(#arrow4)">
+              <line x1="155" y1="52" x2="185" y2="52"></line>
+              <line x1="325" y1="52" x2="355" y2="52"></line>
+              <line x1="437" y1="76" x2="437" y2="116"></line>
+              <line x1="437" y1="160" x2="437" y2="196"></line>
+              <line x1="437" y1="240" x2="437" y2="276"></line>
+              <line x1="437" y1="320" x2="437" y2="356"></line>
+              <line x1="437" y1="400" x2="437" y2="432"></line>
+              <line x1="355" y1="298" x2="295" y2="298"></line>
+              <line x1="295" y1="298" x2="295" y2="138"></line>
+              <line x1="295" y1="138" x2="355" y2="138"></line>
+            </g>
+
+            <text x="205" y="290" font-size="12" fill="#6f665d">autoregressive loop</text>
+          </svg>

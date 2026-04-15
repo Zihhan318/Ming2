@@ -4,8 +4,14 @@
 import re
 import os
 from .talker_pre_processor import TalkerPreProcessor
-from .normalizer import Normalizer
 from .talker_re import TalkerRE
+
+try:
+    from .normalizer import Normalizer
+except ModuleNotFoundError as exc:
+    if exc.name != "pynini":
+        raise
+    Normalizer = None
 
 
 class TalkerTN:
@@ -17,8 +23,9 @@ class TalkerTN:
         if os.path.exists(default_re_cfg):
             self.talker_re.update(default_re_cfg)
         self.re_contains_chinese = re.compile(r'[\u4e00-\u9fff]')
-        self.tn_zh = Normalizer(f'{file_dir}/zh_tn', ordertype='tn')
-        self.tn_en = Normalizer(f'{file_dir}/en_tn', ordertype='en_tn')
+        self.has_pynini = Normalizer is not None
+        self.tn_zh = Normalizer(f'{file_dir}/zh_tn', ordertype='tn') if self.has_pynini else None
+        self.tn_en = Normalizer(f'{file_dir}/en_tn', ordertype='en_tn') if self.has_pynini else None
         
     def __call__(self, text):
         text = self.talker_pre_processor(text)
@@ -32,8 +39,12 @@ class TalkerTN:
                 text = self.talker_re(text)
             except Exception:
                 text = bak_text
-            return self.tn_zh.normalize(text)
-        return self.tn_en.normalize(text)
+            if self.tn_zh is not None:
+                return self.tn_zh.normalize(text)
+            return text
+        if self.tn_en is not None:
+            return self.tn_en.normalize(text)
+        return text
         
     def normalize(self, text):
         return self(text)

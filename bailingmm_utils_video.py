@@ -161,9 +161,63 @@ def _read_video_decord(
 
     return video, smp_fps
 
+def _read_video_cv2(
+    video_path: str, sampler: Optional[Callable] = None,
+) -> Tuple[torch.Tensor, float]:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video via OpenCV: {video_path}")
+
+    src_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    src_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    if src_frames <= 0:
+        frames = []
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        cap.release()
+        if not frames:
+            raise RuntimeError(f"Failed to decode frames via OpenCV: {video_path}")
+        video = torch.from_numpy(np.stack(frames, axis=0))
+        src_frames = video.size(0)
+        src_fps = src_fps if src_fps > 0 else 25.0
+    else:
+        src_fps = src_fps if src_fps > 0 else 25.0
+        if sampler is None:
+            smp_frames = src_frames
+            frame_indices = list(range(smp_frames))
+        else:
+            smp_frames, frame_indices = sampler(src_fps, src_frames)
+
+        frame_indices = sorted(set(int(i) for i in frame_indices if 0 <= i < src_frames))
+        frames = []
+        for frame_idx in frame_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        cap.release()
+        if not frames:
+            raise RuntimeError(f"Failed to sample frames via OpenCV: {video_path}")
+        video = torch.from_numpy(np.stack(frames, axis=0))
+        smp_fps = len(frames) / max(src_frames, 1e-6) * src_fps
+        return video, smp_fps
+
+    if sampler is None:
+        smp_frames = src_frames
+    else:
+        smp_frames, frame_indices = sampler(src_fps, src_frames)
+        video = video[frame_indices]
+    smp_fps = smp_frames / max(src_frames, 1e-6) * src_fps
+    return video, smp_fps
+
 VIDEO_READER_BACKENDS = {
     "torchcodec": _read_video_torchcodec,
     "decord": _read_video_decord,
+    "opencv": _read_video_cv2,
     "torchvision": _read_video_torchvision,
 }
 
@@ -177,6 +231,8 @@ def get_video_reader_backend() -> str:
         video_reader_backend = "torchcodec"
     elif is_decord_available():
         video_reader_backend = "decord"
+    elif cv2 is not None:
+        video_reader_backend = "opencv"
     else:
         video_reader_backend = "torchvision"
     print(f"bailing-native-utils using {video_reader_backend} to read video.", file=sys.stderr)

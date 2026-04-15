@@ -1,0 +1,61 @@
+<svg width="980" height="720" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 720" aria-label="Understanding flow">
+          <defs>
+            <marker id="arrow2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#6d5a47"></path>
+            </marker>
+          </defs>
+          <text x="50" y="50" font-size="14">User</text>
+          <text x="170" y="50" font-size="14">Processor</text>
+          <text x="320" y="50" font-size="14">Image/Video</text>
+          <text x="465" y="50" font-size="14">Audio</text>
+          <text x="580" y="50" font-size="14">Vision</text>
+          <text x="680" y="50" font-size="14">Audio Enc</text>
+          <text x="790" y="50" font-size="14">Projector</text>
+          <text x="885" y="50" font-size="14">MoE LLM</text>
+
+          <g stroke="#d5c9b8" stroke-dasharray="6 6">
+            <line x1="60" y1="60" x2="60" y2="680"></line>
+            <line x1="190" y1="60" x2="190" y2="680"></line>
+            <line x1="350" y1="60" x2="350" y2="680"></line>
+            <line x1="490" y1="60" x2="490" y2="680"></line>
+            <line x1="610" y1="60" x2="610" y2="680"></line>
+            <line x1="710" y1="60" x2="710" y2="680"></line>
+            <line x1="820" y1="60" x2="820" y2="680"></line>
+            <line x1="910" y1="60" x2="910" y2="680"></line>
+          </g>
+
+          <g stroke="#6d5a47" stroke-width="2" marker-end="url(#arrow2)">
+            <line x1="60" y1="100" x2="190" y2="100"></line>
+            <line x1="190" y1="145" x2="350" y2="145"></line>
+            <line x1="350" y1="185" x2="190" y2="185"></line>
+            <line x1="190" y1="230" x2="490" y2="230"></line>
+            <line x1="490" y1="270" x2="190" y2="270"></line>
+            <line x1="190" y1="315" x2="910" y2="315"></line>
+            <line x1="910" y1="360" x2="610" y2="360"></line>
+            <line x1="610" y1="395" x2="820" y2="395"></line>
+            <line x1="820" y1="430" x2="910" y2="430"></line>
+            <line x1="910" y1="475" x2="710" y2="475"></line>
+            <line x1="710" y1="510" x2="820" y2="510"></line>
+            <line x1="820" y1="545" x2="910" y2="545"></line>
+            <line x1="910" y1="610" x2="60" y2="610"></line>
+          </g>
+
+          <g fill="#1c1a17" font-size="13">
+            <text x="95" y="93">messages</text>
+            <text x="210" y="138">process image/video</text>
+            <text x="215" y="178">pixel_values + grid</text>
+            <text x="215" y="223">process audio</text>
+            <text x="225" y="263">audio feats + lengths</text>
+            <text x="440" y="308">token ids + multimodal tensors</text>
+            <text x="745" y="353">extract image features</text>
+            <text x="665" y="388">visual tokens</text>
+            <text x="845" y="423">image embeds</text>
+            <text x="785" y="468">extract audio features</text>
+            <text x="735" y="503">audio sequence</text>
+            <text x="845" y="538">audio embeds</text>
+            <text x="440" y="603">decoded text output</text>
+          </g>
+
+          <rect x="845" y="560" width="130" height="35" rx="10" fill="#fbe9e1" stroke="#c98762"></rect>
+          <text x="910" y="582" text-anchor="middle" font-size="13">generate and decode</text>
+        </svg>

@@ -227,6 +227,8 @@ class BailingTalker2(PreTrainedModel):
         self.model_config = Qwen2Config.from_pretrained(
             f"{self.config.name_or_path}/llm"
         )
+        self.model_config.use_sliding_window = False
+        self.model_config.sliding_window = None
         self.model = Qwen2Model(self.model_config)
         self.model.config._attn_implementation = "sdpa"
         self.latent_dim = 64
@@ -293,6 +295,9 @@ class BailingTalker2(PreTrainedModel):
 
         with self.initial_lock:
             if not self.initialized:
+                if not self._supports_cuda_graphs():
+                    self.initialized = True
+                    return
                 for _ in range(self.max_conc):
                     this_uuid = str(uuid.uuid1())
 
@@ -332,6 +337,53 @@ class BailingTalker2(PreTrainedModel):
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
 
+    def _runtime_device(self):
+        return next(self.parameters()).device
+
+    def _supports_cuda_graphs(self) -> bool:
+        return self._runtime_device().type == "cuda"
+
+    def _device_stream_context(self):
+        if self._supports_cuda_graphs():
+            return torch.cuda.stream(torch.cuda.Stream(device=self._runtime_device()))
+        return nullcontext()
+
+    def _synchronize_runtime(self):
+        device = self._runtime_device()
+        if device.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.synchronize(device)
+        elif device.type == "npu" and hasattr(torch, "npu"):
+            try:
+                torch.npu.synchronize(device)
+            except TypeError:
+                torch.npu.synchronize()
+
+    def _sample_step(self, input_tensor, his_lat, cfg_strength=2.0, sigma=0.25, temperature=0.0):
+        if self._supports_cuda_graphs():
+            return self.sampler_pool.execute(input_tensor, his_lat, cfg_strength, sigma, temperature)
+
+        bat_size, _, z_dim = his_lat.shape
+        randn_tensor = torch.randn(
+            (bat_size, self.config.patch_size, z_dim),
+            device=input_tensor.device,
+            dtype=input_tensor.dtype,
+        )
+        t = get_epss_timesteps(self.config.steps, device=input_tensor.device, dtype=input_tensor.dtype)
+        sde_args = torch.tensor(
+            [cfg_strength, sigma, temperature],
+            device=input_tensor.device,
+            dtype=input_tensor.dtype,
+        )
+        sde_rnd = torch.randn(
+            (self.config.steps, *randn_tensor.shape),
+            device=input_tensor.device,
+            dtype=input_tensor.dtype,
+        )
+        gen_lat = self.cfm.sample(input_tensor, his_lat, randn_tensor, t, sde_args, sde_rnd)
+        inputs_embeds = self.aggregator(gen_lat)
+        stop_out = self.stop_head(input_tensor[:, -1, :]).softmax(dim=-1)
+        return gen_lat, inputs_embeds, stop_out
+
     def forward(self, *args, **kwargs):
         raise NotImplementedError
 
@@ -358,6 +410,7 @@ class BailingTalker2(PreTrainedModel):
         max_cache_len = 2048
         start_t = time.perf_counter()
         max_cache_len = 2048
+        use_cuda_graphs = self._supports_cuda_graphs()
         past_key_values, inputs_embeds_placeholder, cache_position_placeholder, outputs_placeholder, model_graph = self.model_graph_pool.get()
         if past_key_values is None:
             past_key_values = StaticCache(config=self.model.config, max_batch_size=1, max_cache_len=max_cache_len, device=self.model.device, dtype=self.model.dtype)
@@ -389,7 +442,7 @@ class BailingTalker2(PreTrainedModel):
                 #     cache_position=cache_position,
                 # )
 
-                if model_graph is None:
+                if use_cuda_graphs and model_graph is None:
                     model_graph = torch.cuda.CUDAGraph()
                     inputs_embeds_placeholder = torch.empty_like(inputs_embeds)
                     cache_position_placeholder = torch.empty_like(cache_position)
@@ -401,13 +454,21 @@ class BailingTalker2(PreTrainedModel):
                             cache_position=cache_position_placeholder,
                         )
 
-                inputs_embeds_placeholder.copy_(inputs_embeds)
-                cache_position_placeholder.copy_(cache_position)
+                if use_cuda_graphs:
+                    inputs_embeds_placeholder.copy_(inputs_embeds)
+                    cache_position_placeholder.copy_(cache_position)
 
-                # 回放
-                model_graph.replay()
+                    # 回放
+                    model_graph.replay()
 
-                outputs = outputs_placeholder
+                    outputs = outputs_placeholder
+                else:
+                    outputs = self.model(
+                        past_key_values=past_key_values,
+                        inputs_embeds=inputs_embeds,
+                        use_cache=True,
+                        cache_position=cache_position,
+                    )
 
             llm_end_time = time.perf_counter()
 
@@ -417,7 +478,7 @@ class BailingTalker2(PreTrainedModel):
             # inputs_embeds = self.aggregator(gen_lat)
             # stop_out = self.stop_head(outputs.last_hidden_state[:, -1, :]).softmax(dim=-1).cpu()
 
-            gen_lat, inputs_embeds, stop_out = self.sampler_pool.execute(
+            gen_lat, inputs_embeds, stop_out = self._sample_step(
                 outputs.last_hidden_state[:, -1:, :], his_lat,
                 cfg, sigma, temperature,
             )
@@ -552,9 +613,15 @@ class BailingTalker2(PreTrainedModel):
         stream=False,
         last_chunk=False,
     ):
-        speech, stream_state, past_key_values = audio_detokenizer.decode(torch.cat(token, dim=1),
-                                                                      use_cache=stream, **cache,
-                                                                      last_chunk=last_chunk)
+        vae_device = next(audio_detokenizer.parameters()).device
+        vae_dtype = next(audio_detokenizer.parameters()).dtype
+        latent = torch.cat(token, dim=1).to(device=vae_device, dtype=vae_dtype)
+        speech, stream_state, past_key_values = audio_detokenizer.decode(
+            latent,
+            use_cache=stream,
+            **cache,
+            last_chunk=last_chunk,
+        )
         new_cache = {"past_key_values": past_key_values, "stream_state": stream_state}
         return speech[0].detach().float(), new_cache
 
@@ -619,7 +686,7 @@ class BailingTalker2(PreTrainedModel):
         sigma=0.25,
         temperature=0,
     ):
-        with torch.cuda.stream(torch.cuda.Stream(self.device)):
+        with self._device_stream_context():
             for audio_token in self.omni_audio_generation_func(
                 prompt=prompt,
                 text=text,
@@ -651,7 +718,7 @@ class BailingTalker2(PreTrainedModel):
         sigma=0.25,
         temperature=0,
     ):
-        with torch.cuda.stream(torch.cuda.Stream(self.device)):
+        with self._device_stream_context():
             this_uuid = str(uuid.uuid1())
 
             with self.lock:
@@ -725,8 +792,7 @@ class BailingTalker2(PreTrainedModel):
                 )
                 yield {"tts_speech": this_tts_speech.cpu()}
 
-            if torch.cuda.is_available():
-                torch.cuda.current_stream().synchronize()
+            self._synchronize_runtime()
 
             with self.lock:
                 self.tts_speech_token_dict.pop(this_uuid)
@@ -742,7 +808,10 @@ class BailingTalker2(PreTrainedModel):
         speech = []
         spk_emb = []
         for x in prompt_wav_path:
-            speech_tmp, sample_rate = torchaudio.load(x, backend="soundfile")
+            try:
+                speech_tmp, sample_rate = torchaudio.load(x)
+            except ValueError:
+                speech_tmp, sample_rate = torchaudio.load(x, backend="ffmpeg")
             speech_tmp1 = speech_tmp.clone()
             if sample_rate != audio_detokenizer.config.sample_rate:
                 speech_tmp = torchaudio.transforms.Resample(sample_rate, audio_detokenizer.config.sample_rate)(speech_tmp)
@@ -762,11 +831,14 @@ class BailingTalker2(PreTrainedModel):
             pad_speech = torch.zeros((speech.shape[0], pad_len), dtype=speech.dtype, device=speech.device)
             pad_speech[:, -speech.shape[1]:] = speech
             speech = pad_speech
+        vae_device = next(audio_detokenizer.parameters()).device
+        vae_dtype = next(audio_detokenizer.parameters()).dtype
         prompt_wav_lat, _ = audio_detokenizer.encode_latent(
-            speech.to(dtype=torch.bfloat16, device=self.device),
-            torch.tensor([speech.size(1)], dtype=torch.long, device=self.device)
+            speech.to(dtype=vae_dtype, device=vae_device),
+            torch.tensor([speech.size(1)], dtype=torch.long, device=vae_device)
         )  # btd
         assert prompt_wav_lat.shape[1] % self.patch_size == 0
+        prompt_wav_lat = prompt_wav_lat.to(device=self.device, dtype=self.dtype)
         prompt_wav_lat = prompt_wav_lat.reshape(
             -1, self.patch_size, prompt_wav_lat.shape[-1]
         )
@@ -821,7 +893,7 @@ class BailingTalker2(PreTrainedModel):
         prompt = 'Please generate speech based on the following description.\n'
         instruction = None
 
-        with torch.cuda.stream(torch.cuda.Stream(self.device)):
+        with self._device_stream_context():
             talker_last_time = time.perf_counter()
             self.initial_graph()
             # prompt音频等处理
@@ -1085,7 +1157,7 @@ class BailingTalker2(PreTrainedModel):
             stream=False,
             taskname="TTS",
             **kwargs,):
-        with torch.cuda.stream(torch.cuda.Stream(self.device)):
+        with self._device_stream_context():
             self.initial_graph()
 
             prompt_wav_lat, prompt_wav_emb, spk_emb = self.get_prompt_emb(
@@ -1340,4 +1412,3 @@ class BailingTalker2(PreTrainedModel):
                                     else:
                                         all_wavs.append(this_tts_speech_dict["tts_speech"])
                                         yield this_tts_speech_dict["tts_speech"], text_ori, cache_position[count], float(this_tts_speech_dict["tts_speech"].shape[-1]/audio_detokenizer.config.sample_rate)*1000
-

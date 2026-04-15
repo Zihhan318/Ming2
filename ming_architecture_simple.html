@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ming Architecture Simple</title>
+  <style>
+    :root {
+      --bg: #f5f3ee;
+      --panel: #fffdf8;
+      --ink: #1c1a17;
+      --muted: #6f665d;
+      --line: #d5c9b8;
+      --accent: #8f4e1f;
+      --shadow: 0 10px 30px rgba(28, 26, 23, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, #f9efe3 0, transparent 30%),
+        radial-gradient(circle at top right, #e9f3f4 0, transparent 25%),
+        linear-gradient(180deg, #f7f3ed 0%, #f0ebe3 100%);
+    }
+
+    .page {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, #fffaf2 0%, #f7f3ec 100%);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 28px;
+      box-shadow: var(--shadow);
+      margin-bottom: 24px;
+    }
+
+    h1, h2 {
+      margin: 0 0 10px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    h1 {
+      font-size: 38px;
+    }
+
+    h2 {
+      font-size: 26px;
+      margin-bottom: 16px;
+    }
+
+    p {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.6;
+      color: var(--ink);
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+      margin-bottom: 20px;
+    }
+
+    .mermaid {
+      overflow: auto;
+      background: #fff;
+      border: 1px solid #e4d9ca;
+      border-radius: 16px;
+      padding: 16px;
+    }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "neutral",
+      securityLevel: "loose",
+      flowchart: { useMaxWidth: true, htmlLabels: true },
+      sequence: { useMaxWidth: true }
+    });
+  </script>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <h1>Ming Architecture Simple</h1>
+      <p class="muted">
+        HTML preview generated from <code>ming_architecture_simple.md</code>.
+        Mermaid diagrams render in-browser and require network access to load Mermaid from CDN.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>1. Overall Architecture</h2>
+      <pre class="mermaid">flowchart TB
+    A[User Input] --&gt; B[Processor]
+    B --&gt; B1[Text Tokens]
+    B --&gt; B2[Image Video Preprocess]
+    B --&gt; B3[Audio Preprocess]
+
+    subgraph U[Unified Backbone]
+        C1[Vision Encoder]
+        C2[Audio Encoder]
+        C3[Image Projector]
+        C4[Audio Projector]
+        C5[MoE LLM]
+        C6[Text Output]
+    end
+
+    B2 --&gt; C1 --&gt; C3
+    B3 --&gt; C2 --&gt; C4
+    B1 --&gt; C5
+    C3 --&gt; C5
+    C4 --&gt; C5
+    C5 --&gt; C6
+
+    subgraph G[Optional Image Generation]
+        G1[Generation Tokens]
+        G2[Selected LLM States]
+        G3[Connector]
+        G4[ByT5 Optional]
+        G5[Diffusion]
+        G6[Image Output]
+    end
+
+    B1 -.-> G1
+    B2 -.-> G1
+    G1 -. append to LLM input .-> C5
+    C5 -. select gen-token states .-> G2
+    G2 --&gt; G3
+    G3 --&gt; G5
+    G4 -. extra text cond .-> G5
+    G5 --&gt; G6
+
+    subgraph T[Optional Talker load_talker=True, independent of main MoE path]
+        T1[Speaker Extractor]
+        T2[BailingTalker2 Qwen2]
+        T3[CFM DiT]
+        T4[Aggregator Stop Head]
+        T5[AudioVAE]
+        T6[Waveform Output]
+    end
+
+    A -. prompt wav .-> T1
+    A -. prompt text .-> T2
+    T1 --&gt; T2
+    T2 --&gt; T3 --&gt; T4 --&gt; T2
+    T3 --&gt; T5 --&gt; T6</pre>
+      <p class="muted">Talker is an optional side branch loaded alongside the main model. TTS generation does not execute through the main MoE LLM path.</p>
+    </section>
+
+    <section class="card">
+      <h2>2. Understanding Flow</h2>
+      <pre class="mermaid">sequenceDiagram
+    participant U as User
+    participant P as Processor
+    participant IP as ImageProcessor
+    participant AP as AudioProcessor
+    participant VE as VisionEncoder
+    participant AE as AudioEncoder
+    participant PR as Projector
+    participant L as MoE_LLM
+    participant O as Output
+
+    U-&gt;&gt;P: text image video audio
+    P-&gt;&gt;P: template plus tokenize text
+
+    opt image or video
+        P-&gt;&gt;IP: process image video
+        IP--&gt;&gt;P: pixel_values and grid
+    end
+
+    opt audio
+        P-&gt;&gt;AP: process audio
+        AP--&gt;&gt;P: audio feats and lengths
+    end
+
+    P--&gt;&gt;L: input_ids and modality tensors
+
+    opt image or video
+        L-&gt;&gt;VE: extract visual feature
+        VE--&gt;&gt;PR: visual tokens
+        PR--&gt;&gt;L: visual embeds
+    end
+
+    opt audio
+        L-&gt;&gt;AE: extract audio feature
+        AE--&gt;&gt;PR: audio tokens
+        PR--&gt;&gt;L: audio embeds
+    end
+
+    L-&gt;&gt;L: prompt_wrap_navit and generate
+    L--&gt;&gt;O: generated ids
+    O--&gt;&gt;U: decoded text</pre>
+    </section>
+
+    <section class="card">
+      <h2>3. Image Generation Flow</h2>
+      <pre class="mermaid">sequenceDiagram
+    participant U as User
+    participant P as Processor
+    participant VE as VisionEncoder
+    participant L as MainLLM
+    participant G as GenTokens
+    participant S as SelectedStates
+    participant C as Connector
+    participant B as ByT5
+    participant D as Diffusion
+    participant I as Image
+
+    U-&gt;&gt;P: prompt and optional image
+    P--&gt;&gt;L: input ids and pixel values
+
+    opt image input
+        L-&gt;&gt;VE: extract image feature
+        VE--&gt;&gt;L: image embeds
+    end
+
+    L-&gt;&gt;G: append multiscale generation tokens
+    G--&gt;&gt;L: expanded ids and gen mask
+    L-&gt;&gt;L: forward hidden states
+    L--&gt;&gt;S: select gen-token states
+    S--&gt;&gt;C: llm states
+    C--&gt;&gt;D: condition embeds
+
+    opt extra text control
+        B--&gt;&gt;D: ByT5 embeds
+    end
+
+    D--&gt;&gt;I: generated image</pre>
+    </section>
+
+    <section class="card">
+      <h2>4. Talker Flow</h2>
+      <pre class="mermaid">sequenceDiagram
+    participant U as User
+    participant S as SpeakerExtractor
+    participant T as Talker
+    participant Q as Qwen2
+    participant C as CFM_DiT
+    participant A as Aggregator
+    participant H as StopHead
+    participant V as AudioVAE
+    participant W as Waveform
+
+    Note over T,V: Optional side branch loaded with load_talker=True; no main MoE execution edge in TTS path
+
+    U-&gt;&gt;S: prompt wav
+    S--&gt;&gt;T: speaker embedding
+    U-&gt;&gt;T: prompt text
+    T-&gt;&gt;Q: prefill embeds
+    loop autoregressive audio
+        Q--&gt;&gt;C: last hidden state
+        C--&gt;&gt;A: next latent
+        A--&gt;&gt;Q: next embeds
+        Q--&gt;&gt;H: stop score
+    end
+    C--&gt;&gt;V: acoustic latents
+    V--&gt;&gt;W: waveform
+    W--&gt;&gt;U: audio</pre>
+      <p class="muted">This flow is separate from the main MoE backbone and is driven by the Talker Qwen2 stack plus CFM/DiT and AudioVAE.</p>
+    </section>
+
+    <section class="card">
+      <h2>5. Performance Hotspots</h2>
+      <pre class="mermaid">flowchart LR
+    A[Processor] --&gt; B[Vision Encoder]
+    A --&gt; C[Audio Encoder]
+    B --&gt; D[Projectors Prompt Wrap]
+    C --&gt; D
+    D --&gt; E[MoE LLM with routing]
+    E --&gt; F1[Text Understanding]
+
+    E -. image gen .-> G[Selected LLM States]
+    G --&gt; H[Connector]
+    H --&gt; I[Diffusion]
+    I --&gt; F2[Image Output]
+
+    T1[Talker Qwen2 side branch] --&gt; T2[CFM DiT]
+    T2 --&gt; T3[AudioVAE]
+    T3 --&gt; F3[Audio Output]</pre>
+      <p class="muted">Talker is shown as a separate hotspot path here, not as a downstream stage of the main MoE backbone.</p>
+    </section>
+  </div>
+</body>
+</html>

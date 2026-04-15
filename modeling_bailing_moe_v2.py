@@ -30,7 +30,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 # import transformer_engine.pytorch as te
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import Cache, DynamicCache, StaticCache
 from transformers.modeling_attn_mask_utils import (
     AttentionMaskConverter,
     _prepare_4d_attention_mask,
@@ -76,6 +76,21 @@ if is_torch_fx_available():
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "BailingMoeV2Config"
+
+
+def _get_current_autocast_dtype(device_type: str) -> Optional[torch.dtype]:
+    if device_type == "cuda" and hasattr(torch, "get_autocast_gpu_dtype"):
+        return torch.get_autocast_gpu_dtype()
+    if device_type == "cpu" and hasattr(torch, "get_autocast_cpu_dtype"):
+        return torch.get_autocast_cpu_dtype()
+    if device_type == "xpu" and hasattr(torch, "get_autocast_xpu_dtype"):
+        return torch.get_autocast_xpu_dtype()
+    if device_type == "npu" and hasattr(torch, "get_autocast_dtype"):
+        try:
+            return torch.get_autocast_dtype(device_type)
+        except (RuntimeError, TypeError):
+            return None
+    return None
 
 
 def _get_unpad_data(attention_mask):
@@ -154,7 +169,7 @@ class BailingMoeV2RotaryEmbedding(nn.Module):
     def forward(self, x, position_ids):
         position_ids = position_ids[:, 0, :] 
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
-        position_ids_expanded = position_ids[:, None, :].float()
+        position_ids_expanded = position_ids[:, None, :].to(x.device).float()
 
 
         device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
@@ -193,10 +208,10 @@ class BailingMoeV2RotaryEmbedding3D(nn.Module):
     def forward(self, x, position_ids):
         if self.rope_type == "3D" or self.rope_type == "video_rope":
             inv_freq_expanded = self.inv_freq[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1).to(x.device)
-            position_ids_expanded = position_ids[:, :, None, :].float()
+            position_ids_expanded = position_ids[:, :, None, :].to(x.device).float()
         else:
             inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
-            position_ids_expanded = position_ids[:, None, :].float()
+            position_ids_expanded = position_ids[:, None, :].to(x.device).float()
 
         device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):  # Force float32
@@ -1146,7 +1161,7 @@ class BailingMoeV2FlashAttention2(BailingMoeV2Attention):
             if hasattr(self.config, "_pre_quantization_dtype"):
                 target_dtype = self.config._pre_quantization_dtype
             elif torch.is_autocast_enabled():
-                target_dtype = torch.get_autocast_gpu_dtype()
+                target_dtype = _get_current_autocast_dtype(query_states.device.type) or self.query_key_value.weight.dtype
             else:
                 target_dtype = self.query_key_value.weight.dtype
 
@@ -1279,6 +1294,7 @@ class BailingMoeV2FlashAttention2(BailingMoeV2Attention):
 
 ATTENTION_CLASSES = {
     "eager": BailingMoeV2Attention,
+    "sdpa": BailingMoeV2Attention,
     "flash_attention_2": BailingMoeV2FlashAttention2,
 }
 
@@ -2232,4 +2248,3 @@ class BailingMoeV2ForCausalLM(BailingMoeV2PreTrainedModel, GenerationMixin):
                 tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
             )
         return reordered_past
-

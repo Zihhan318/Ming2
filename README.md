@@ -232,6 +232,51 @@ print(output_text)
 # ......
 ```
 
+### Image Generation on Ascend / NPU
+
+For local image generation or editing on Ascend, you can use `test_infer_imagegen_npu.py`.
+
+Text-to-image:
+```shell
+python test_infer_imagegen_npu.py \
+  --model-path models/Ming-flash-omni-2.0 \
+  --code-path . \
+  --prompt "一张清新自然的草莓奶油蛋糕美食摄影，白色陶瓷盘，柔和自然光，写实风格。" \
+  --output generated_imgs/cake_t2i.png \
+  --seed 42 \
+  --tensor-parallel-devices 8
+```
+
+Image editing:
+```shell
+python test_infer_imagegen_npu.py \
+  --model-path models/Ming-flash-omni-2.0 \
+  --code-path . \
+  --image figures/cases/cake.jpg \
+  --prompt "把蛋糕点缀得更精致，增加更多草莓切片和薄荷叶，保持写实美食摄影风格。" \
+  --output generated_imgs/cake_edit.png \
+  --seed 42 \
+  --tensor-parallel-devices 8
+```
+
+Notes for NPU:
+- The script falls back to `attn_implementation=eager` unless CUDA + `flash_attn` are both available. This avoids enabling a CUDA-only path on CPU/NPU runtimes.
+- The ZImage RoPE path uses a real-valued `cos/sin` implementation instead of `complex64`, because current Ascend kernels do not fully support the required complex indexing path.
+- The attention mask is materialized to `[B, 1, S, S]` for Ascend FlashAttention compatibility, instead of relying on broadcast-only mask shapes.
+- The `talker` audio output path keeps CUDA graph acceleration on NVIDIA, but automatically falls back to eager execution on Ascend/NPU so TTS does not depend on CUDA-only graph or stream APIs.
+
+### Talker Audio Output on Ascend / NPU
+
+For local TTS verification on Ascend, use `test_talker_npu.py`. This keeps the original CUDA-oriented demo scripts unchanged and provides a separate NPU entry point in the same style as `test_infer_npu.py` and `test_infer_imagegen_npu.py`.
+
+Quick smoke test:
+```shell
+python test_talker_npu.py \
+  --model-path models/Ming-flash-omni-2.0 \
+  --text "这是一条测试语句。欢迎使用百灵。你可以问我一些问题。" \
+  --output generated_audios/out_tts.wav
+```
+
 
 ## Citation
 
@@ -255,5 +300,3 @@ If you find our work helpful, feel free to give us a cite.
   year={2025}
 }
 ```
-
-

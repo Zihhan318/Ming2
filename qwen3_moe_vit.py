@@ -282,7 +282,7 @@ class Qwen3VLMoeVisionAttention(nn.Module):
         self.config = config
         self.attention_dropout = 0.0
         self.is_causal = False
-        self.config._attn_implementation = "flash_attention_2"
+        self.config._attn_implementation = getattr(config, "_attn_implementation", "eager") or "eager"
     
     def forward(
         self,

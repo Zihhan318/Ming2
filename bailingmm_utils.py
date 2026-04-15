@@ -11,7 +11,6 @@ import requests
 import torch
 
 from PIL import Image
-import torchaudio
 from typing import Union, Tuple, List
 
 VIDEO_FETCH_VERSION = os.environ.get("VIDEO_FETCH_VERSION", "v1")
@@ -173,6 +172,13 @@ def fetch_image_wo_resize(ele: dict[str, str | Image.Image], size_factor: int = 
     return image
 
 def fetch_audio(ele: dict[str, str | torch.Tensor], return_tensor="pt") -> Tuple[Union[torch.Tensor, np.ndarray], int]:
+    try:
+        import torchaudio
+    except ImportError as exc:
+        raise ImportError(
+            "Audio inputs require torchaudio. Install torchaudio or avoid passing audio/audio_url content."
+        ) from exc
+
     if "audio" in ele:
         audio = ele["audio"]
     else:

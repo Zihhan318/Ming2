@@ -17,6 +17,7 @@
 # All rights and credit for the original implementation remain with the original authors and contributors, and this project complies with the applicable open-source license terms of the referenced repository.
 
 import inspect
+import time
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
@@ -436,6 +437,17 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
 
         device = device or self._execution_device
 
+        def sync_device():
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                torch.npu.synchronize()
+            elif torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+        self._ming_profile = {
+            "dit_total": 0.0,
+            "vae_total": 0.0,
+        }
+
         self._guidance_scale = guidance_scale
         self._joint_attention_kwargs = joint_attention_kwargs
         self._interrupt = False
@@ -486,12 +498,16 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
 
         if ref_hidden_states is not None:
             assert ref_hidden_states.ndim == 4 and ref_hidden_states.shape[0] == 1
+            sync_device()
+            vae_ref_start = time.perf_counter()
             ref_hidden_states = ref_hidden_states.to(self.vae.dtype).to(device)
             # if torch.distributed.get_rank() == 0:
             #     embed()
             # torch.distributed.barrier()
             ref_hidden_states = self.vae.encode(ref_hidden_states).latent_dist.mode()
             ref_hidden_states = (ref_hidden_states - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+            sync_device()
+            self._ming_profile["vae_total"] += time.perf_counter() - vae_ref_start
 
 
         # Repeat prompt_embeds for num_images_per_prompt
@@ -524,6 +540,8 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
         self._num_timesteps = len(timesteps)
 
         # 6. Denoising loop
+        sync_device()
+        dit_start = time.perf_counter()
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -618,15 +636,22 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
 
+        sync_device()
+        self._ming_profile["dit_total"] = time.perf_counter() - dit_start
+
         if output_type == "latent":
             image = latents
 
         else:
+            sync_device()
+            vae_start = time.perf_counter()
             latents = latents.to(self.vae.dtype)
             latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
 
             image = self.vae.decode(latents, return_dict=False)[0]
             image = self.image_processor.postprocess(image, output_type=output_type)
+            sync_device()
+            self._ming_profile["vae_total"] += time.perf_counter() - vae_start
 
         # Offload all models
         self.maybe_free_model_hooks()

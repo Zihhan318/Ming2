@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import inspect
+import time
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
@@ -41,7 +42,10 @@ from diffusers.utils import (
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.stable_diffusion_3.pipeline_output import StableDiffusion3PipelineOutput
-from IPython import embed
+try:
+    from IPython import embed
+except ImportError:
+    embed = None
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
@@ -935,6 +939,18 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
 
         height = height or self.default_sample_size * self.vae_scale_factor
         width = width or self.default_sample_size * self.vae_scale_factor
+        device = device or self._execution_device
+
+        def sync_device():
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                torch.npu.synchronize()
+            elif torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+        self._ming_profile = {
+            "dit_total": 0.0,
+            "vae_total": 0.0,
+        }
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
@@ -1034,12 +1050,16 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
 
         if ref_x is not None:
             assert ref_x.ndim == 4 #  and ref_x.shape[0] == 1
+            sync_device()
+            vae_ref_start = time.perf_counter()
             ref_x = ref_x.to(self.vae.dtype).to(device)
             # if torch.distributed.get_rank() == 0:
             #     embed()
             # torch.distributed.barrier()
             ref_x = self.vae.encode(ref_x).latent_dist.mode()
             ref_x = (ref_x - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+            sync_device()
+            self._ming_profile["vae_total"] += time.perf_counter() - vae_ref_start
 
             if ref_add_noise:
                 bsz = ref_x.shape[0]
@@ -1103,7 +1123,9 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
 
         if extra_vit_input is not None:
             extra_vit_input = torch.cat([extra_vit_input * 1.0, extra_vit_input])
-        
+
+        sync_device()
+        dit_start = time.perf_counter()
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -1231,14 +1253,19 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
 
                 if XLA_AVAILABLE:
                     xm.mark_step()
+        sync_device()
+        self._ming_profile["dit_total"] = time.perf_counter() - dit_start
 
         if output_type == "latent":
             image = latents
 
         else:
             latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-
+            sync_device()
+            vae_start = time.perf_counter()
             image = self.vae.decode(latents, return_dict=False)[0]
+            sync_device()
+            self._ming_profile["vae_total"] += time.perf_counter() - vae_start
             image = self.image_processor.postprocess(image, output_type=output_type)
 
         # Offload all models

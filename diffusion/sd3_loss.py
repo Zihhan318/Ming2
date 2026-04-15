@@ -5,11 +5,18 @@ from collections import OrderedDict
 import logging
 from diffusers import FlowMatchEulerDiscreteScheduler
 import torch.nn as nn
+from contextlib import nullcontext
 from .sd3_transformer import SD3Transformer2DModel
 from .pipeline_stable_diffusion_3 import StableDiffusion3Pipeline
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _autocast_context(device_type: str, dtype: torch.dtype = torch.bfloat16, enabled: bool = True):
+    if not enabled or device_type == "cpu":
+        return nullcontext()
+    return torch.amp.autocast(device_type=device_type, dtype=dtype)
 
 class ToClipMLP(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -52,8 +59,11 @@ class SD3Model_withMLP(nn.Module):
 
         if extra_vit_input is not None:
             encoder_hidden_states = torch.cat((encoder_hidden_states, extra_vit_input), dim=1)
-            
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+
+        # Original CUDA-only branch kept for reference during NPU adaptation.
+        # with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+        # with _autocast_context(self.device_type, dtype=torch.bfloat16):
+        with _autocast_context(hidden_states.device.type, dtype=torch.bfloat16):
             hidden_states = self.transformer(
                         hidden_states=hidden_states,
                         encoder_hidden_states=encoder_hidden_states,
@@ -121,7 +131,15 @@ class SD3Loss(torch.nn.Module):
         if device is not None:
             self.device = torch.device(device)   
         else:
-            self.device = torch.device(torch.cuda.current_device())    
+            # Original CUDA fallback kept for reference during NPU adaptation.
+            # self.device = torch.device(torch.cuda.current_device())
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                current_idx = torch.npu.current_device() if hasattr(torch.npu, "current_device") else 0
+                self.device = torch.device(f"npu:{current_idx}")
+            elif torch.cuda.is_available():
+                self.device = torch.device(torch.cuda.current_device())
+            else:
+                self.device = torch.device("cpu")
 
         self.scheduler_path = scheduler_path
         self.vae = AutoencoderKL.from_pretrained(
@@ -178,6 +196,8 @@ class SD3Loss(torch.nn.Module):
             tokenizer_3=None,  
             scheduler=self.noise_scheduler,
         ).to(self.device)
+        self.dit_total = 0.0
+        self.vae_total = 0.0
 
         #self._compile_pipeline()
 
@@ -221,7 +241,9 @@ class SD3Loss(torch.nn.Module):
     def sample(
         self, encoder_hidden_states, steps=20, cfg=7.0, image_cfg=1.0, cfg_mode=1, seed=42, height=512, width=512, 
         negative_encoder_hidden_states=None, extra_vit_input=None, ref_x=None):
-        
+
+        self.dit_total = 0.0
+        self.vae_total = 0.0
         pooled_projections = torch.nn.functional.adaptive_avg_pool1d(encoder_hidden_states.permute(0, 2, 1), output_size=1)
         pooled_projections = torch.nn.functional.adaptive_avg_pool1d(pooled_projections.squeeze(2), output_size=2048)
         
@@ -246,5 +268,7 @@ class SD3Loss(torch.nn.Module):
             use_refiner=self.use_refiner,
             use_qwpe=self.use_qwpe,
         ).images
+        self.dit_total = getattr(self.pipelines, "_ming_profile", {}).get("dit_total", 0.0)
+        self.vae_total = getattr(self.pipelines, "_ming_profile", {}).get("vae_total", 0.0)
 
         return image  

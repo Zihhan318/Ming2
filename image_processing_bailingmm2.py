@@ -50,11 +50,25 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 try:
     from transformers.image_utils import VideoInput
-except:
-    from transformers.video_utils import VideoInput
+except Exception:
+    from typing import Any as VideoInput
 from transformers.processing_utils import ImagesKwargs
 from transformers.utils import TensorType, is_vision_available, logging
-from transformers.video_utils import make_batched_videos
+
+try:
+    from transformers.video_utils import make_batched_videos
+except Exception:
+    def make_batched_videos(videos):
+        if videos is None:
+            return None
+        if not isinstance(videos, (list, tuple)):
+            return [videos]
+        if len(videos) == 0:
+            return []
+        first = videos[0]
+        if isinstance(first, (list, tuple)):
+            return list(videos)
+        return [list(videos)]
 
 logger = logging.get_logger(__name__)
 
@@ -452,7 +466,10 @@ class BailingMM2ImageProcessor(BaseImageProcessor):
         do_convert_rgb = do_convert_rgb if do_convert_rgb is not None else self.do_convert_rgb
 
         if images is not None:
-            images = self.fetch_images(images)
+            # Newer Transformers versions may re-run `fetch_images` on already-loaded PIL inputs,
+            # which breaks local multimodal pipelines that pass PIL images directly.
+            if not valid_images(images):
+                images = self.fetch_images(images)
             images = make_flat_list_of_images(images)
 
         if images is not None and not valid_images(images):
@@ -589,4 +606,3 @@ class BailingMM2ImageProcessor(BaseImageProcessor):
         )
         grid_h, grid_w = resized_height // patch_size, resized_width // patch_size
         return grid_h * grid_w
-

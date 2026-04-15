@@ -1,0 +1,61 @@
+<svg width="1180" height="350" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 350" aria-label="Performance hotspots">
+        <defs>
+          <marker id="arrow5" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#6d5a47"></path>
+          </marker>
+        </defs>
+
+        <rect x="30" y="70" width="120" height="44" rx="12" fill="#f4ede2" stroke="#cfbea8"></rect>
+        <text x="90" y="97" text-anchor="middle" font-size="14">Processor</text>
+
+        <rect x="190" y="35" width="160" height="44" rx="12" fill="#f7e3cf" stroke="#cf9160"></rect>
+        <text x="270" y="62" text-anchor="middle" font-size="14">Vision Encoder</text>
+
+        <rect x="190" y="115" width="160" height="44" rx="12" fill="#f4ead8" stroke="#c6a175"></rect>
+        <text x="270" y="142" text-anchor="middle" font-size="14">Audio Encoder</text>
+
+        <rect x="390" y="70" width="170" height="44" rx="12" fill="#f4ead8" stroke="#c6a175"></rect>
+        <text x="475" y="97" text-anchor="middle" font-size="14">Projector / Prompt Wrap</text>
+
+        <rect x="610" y="70" width="180" height="44" rx="12" fill="#f7cdbb" stroke="#c66a44"></rect>
+        <text x="700" y="97" text-anchor="middle" font-size="14">MoE LLM Backbone</text>
+
+        <rect x="835" y="35" width="165" height="44" rx="12" fill="#f7e3cf" stroke="#cf9160"></rect>
+        <text x="917" y="62" text-anchor="middle" font-size="14">Image Condition Builder</text>
+
+        <rect x="835" y="115" width="165" height="44" rx="12" fill="#f7e3cf" stroke="#cf9160"></rect>
+        <text x="917" y="142" text-anchor="middle" font-size="14">Connector</text>
+
+        <rect x="1035" y="75" width="120" height="44" rx="12" fill="#f6b3a0" stroke="#b95531"></rect>
+        <text x="1095" y="102" text-anchor="middle" font-size="14">Diffusion</text>
+
+        <rect x="835" y="225" width="165" height="44" rx="12" fill="#e6dff7" stroke="#9e84c4"></rect>
+        <text x="917" y="252" text-anchor="middle" font-size="14">Talker Qwen2</text>
+
+        <rect x="1035" y="225" width="120" height="44" rx="12" fill="#d6c8f1" stroke="#8265b2"></rect>
+        <text x="1095" y="252" text-anchor="middle" font-size="14">CFM DiT</text>
+
+        <rect x="1035" y="295" width="120" height="34" rx="10" fill="#e8eef8" stroke="#84a0c9"></rect>
+        <text x="1095" y="317" text-anchor="middle" font-size="13">AudioVAE</text>
+
+        <g stroke="#6d5a47" stroke-width="2" marker-end="url(#arrow5)">
+          <line x1="150" y1="92" x2="190" y2="57"></line>
+          <line x1="150" y1="92" x2="190" y2="137"></line>
+          <line x1="350" y1="57" x2="390" y2="92"></line>
+          <line x1="350" y1="137" x2="390" y2="92"></line>
+          <line x1="560" y1="92" x2="610" y2="92"></line>
+          <line x1="790" y1="92" x2="835" y2="57"></line>
+          <line x1="790" y1="92" x2="835" y2="137"></line>
+          <line x1="1000" y1="57" x2="1035" y2="92"></line>
+          <line x1="1000" y1="137" x2="1035" y2="92"></line>
+          <line x1="790" y1="92" x2="835" y2="247"></line>
+          <line x1="1000" y1="247" x2="1035" y2="247"></line>
+          <line x1="1095" y1="269" x2="1095" y2="295"></line>
+        </g>
+
+        <text x="270" y="26" text-anchor="middle" font-size="12" fill="#6f665d">medium-high</text>
+        <text x="270" y="176" text-anchor="middle" font-size="12" fill="#6f665d">medium</text>
+        <text x="700" y="60" text-anchor="middle" font-size="12" fill="#6f665d">top hotspot</text>
+        <text x="1095" y="62" text-anchor="middle" font-size="12" fill="#6f665d">top hotspot</text>
+        <text x="1095" y="213" text-anchor="middle" font-size="12" fill="#6f665d">high hotspot</text>
+      </svg>

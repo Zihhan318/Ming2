@@ -5,9 +5,16 @@ import copy
 import numpy as np
 import torch
 import torch.utils.data
-import torchaudio
-import torchaudio.compliance.kaldi as kaldi
-import whisper
+try:
+    import torchaudio
+    import torchaudio.compliance.kaldi as kaldi
+except Exception:
+    torchaudio = None
+    kaldi = None
+try:
+    import whisper
+except Exception:
+    whisper = None
 from torch.nn.utils.rnn import pad_sequence
 
 from transformers.utils import TensorType
@@ -97,6 +104,10 @@ class BailingMM2AudioProcessor(FeatureExtractionMixin):
         use_whisper_encoder: bool = False,
         maximum_audio_duration: float = -1
     ) -> torch.Tensor:
+        if torchaudio is None:
+            raise ImportError("Audio preprocessing requires torchaudio.")
+        if use_whisper_encoder and whisper is None:
+            raise ImportError("Whisper audio preprocessing requires whisper.")
         waveform = normalize_audio_tensor(waveform, sample_rate, target_sample_rate=self.sample_rate)
         if maximum_audio_duration > 0:
             waveform = waveform[:int(maximum_audio_duration * self.sample_rate)]
@@ -174,6 +185,8 @@ class WavFrontend(torch.nn.Module):
             self,
             input: torch.Tensor,
             input_lengths: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if kaldi is None:
+            raise ImportError("WavFrontend requires torchaudio.")
         batch_size = input.size(0)
         feats = []
         feats_lens = []
@@ -275,6 +288,8 @@ class WhisperFrontend:
         input: [B, T]
         input_lengths: [B]
         """
+        if whisper is None:
+            raise ImportError("WhisperFrontend requires whisper.")
 
         assert input.size(0) == 1
 
@@ -369,10 +384,11 @@ def normalize_audio_tensor(
 
     # Resample.
     if target_sample_rate is not None and sample_rate != target_sample_rate:
+        if torchaudio is None:
+            raise ImportError("Audio resampling requires torchaudio.")
         resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=target_sample_rate)
         if device is not None:
             resampler = resampler.to(device)
         waveform = resampler(waveform.unsqueeze(0)).squeeze(0)
 
     return waveform
-

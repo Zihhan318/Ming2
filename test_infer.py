@@ -2,7 +2,12 @@ import os
 import torch
 import time
 import numpy as np
+from pathlib import Path
 from bisect import bisect_left
+
+DEFAULT_HF_CACHE = Path(__file__).resolve().parent / ".hf-cache"
+os.environ.setdefault("HF_HOME", str(DEFAULT_HF_CACHE))
+os.environ.setdefault("HF_MODULES_CACHE", str(DEFAULT_HF_CACHE / "modules"))
 
 from transformers import (
     AutoProcessor,
@@ -13,6 +18,28 @@ from modeling_bailingmm2 import BailingMM2NativeForConditionalGeneration
 import warnings
 
 warnings.filterwarnings("ignore")
+
+
+def ensure_local_hf_cache():
+    cache_root = Path(os.environ["HF_HOME"])
+    modules_root = cache_root / "modules"
+    modules_root.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_MODULES_CACHE"] = str(modules_root)
+
+
+def get_runtime_device() -> torch.device:
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        current_idx = torch.npu.current_device() if hasattr(torch.npu, "current_device") else 0
+        return torch.device(f"npu:{current_idx}")
+    if torch.cuda.is_available():
+        return torch.device(f"cuda:{torch.cuda.current_device()}")
+    return torch.device("cpu")
+
+
+def get_attn_implementation(device: torch.device) -> str:
+    if device.type in {"cuda", "npu"}:
+        return "sdpa"
+    return "eager"
 
 def generate(messages, processor, model, sys_prompt_exp=None, use_cot_system_prompt=False, max_new_tokens=512):
     text = processor.apply_chat_template(
@@ -62,15 +89,17 @@ def generate(messages, processor, model, sys_prompt_exp=None, use_cot_system_pro
     return output_text
 
 if __name__ == '__main__':
+    ensure_local_hf_cache()
     model_name_or_path = "."
     code_path = "."
+    device = get_runtime_device()
+    attn_implementation = get_attn_implementation(device)
     model = BailingMM2NativeForConditionalGeneration.from_pretrained(
         model_name_or_path,
-        dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
-        device_map="auto",
+        torch_dtype=torch.bfloat16,
+        attn_implementation=attn_implementation,
         load_image_gen=False,
-    ).to(dtype=torch.bfloat16)
+    ).to(device=device, dtype=torch.bfloat16)
 
     processor = AutoProcessor.from_pretrained(code_path, trust_remote_code=True)
     vision_path = "/input/sunyunxiao.syx/assets/"

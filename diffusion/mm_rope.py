@@ -255,10 +255,24 @@ class JointAttnProcessor2_0:
 
         # Apply Rotary Position Embeddings
         if image_rotary_emb is not None:
-            if image_rotary_emb.shape[1] > query.shape[1]:
-                image_rotary_emb = image_rotary_emb[:, :query.shape[1], :]
-            query = apply_rotary_emb(query, image_rotary_emb, use_real=False)
-            key = apply_rotary_emb(key, image_rotary_emb, use_real=False)
+            if isinstance(image_rotary_emb, tuple):
+                rotary_seq_len = image_rotary_emb[0].shape[1]
+            else:
+                rotary_seq_len = image_rotary_emb.shape[1]
+            if rotary_seq_len > query.shape[1]:
+                if isinstance(image_rotary_emb, tuple):
+                    image_rotary_emb = (
+                        image_rotary_emb[0][:, :query.shape[1], :],
+                        image_rotary_emb[1][:, :query.shape[1], :],
+                    )
+                else:
+                    image_rotary_emb = image_rotary_emb[:, :query.shape[1], :]
+            # Original complex-valued path kept for reference during NPU adaptation.
+            # query = apply_rotary_emb(query, image_rotary_emb, use_real=False)
+            # key = apply_rotary_emb(key, image_rotary_emb, use_real=False)
+            use_real_rope = hasattr(torch, "npu") and torch.npu.is_available()
+            query = apply_rotary_emb(query, image_rotary_emb, use_real=use_real_rope is True)
+            key = apply_rotary_emb(key, image_rotary_emb, use_real=use_real_rope is True)
 
         query = query.transpose(1, 2)
         key = key.transpose(1, 2)
@@ -392,8 +406,11 @@ class OmniGen2RotaryPosEmbed(nn.Module):
                       theta: int) -> List[torch.Tensor]:
         freqs_cis = []
         freqs_dtype = torch.float32 if torch.backends.mps.is_available() else torch.float64
+        use_real = hasattr(torch, "npu") and torch.npu.is_available()
         for i, (d, e) in enumerate(zip(axes_dim, axes_lens)):
-            emb = get_1d_rotary_pos_embed(d, e, theta=theta, freqs_dtype=freqs_dtype)
+            # Original complex-valued RoPE cache kept for reference during NPU adaptation.
+            # emb = get_1d_rotary_pos_embed(d, e, theta=theta, freqs_dtype=freqs_dtype)
+            emb = get_1d_rotary_pos_embed(d, e, theta=theta, use_real=use_real, freqs_dtype=freqs_dtype)
             freqs_cis.append(emb)
         return freqs_cis
 
@@ -403,10 +420,30 @@ class OmniGen2RotaryPosEmbed(nn.Module):
             ids = ids.to("cpu")
 
         result = []
+        result_cos = []
+        result_sin = []
         for i in range(len(self.axes_dim)):
-            freqs = freqs_cis[i].to(ids.device)
-            index = ids[:, :, i : i + 1].repeat(1, 1, freqs.shape[-1]).to(torch.int64)
-            result.append(torch.gather(freqs.unsqueeze(0).repeat(index.shape[0], 1, 1), dim=1, index=index))
+            freqs = freqs_cis[i]
+            if isinstance(freqs, tuple):
+                freqs_cos, freqs_sin = freqs
+                freqs_cos = freqs_cos.to(ids.device)
+                freqs_sin = freqs_sin.to(ids.device)
+                index = ids[:, :, i : i + 1].repeat(1, 1, freqs_cos.shape[-1]).to(torch.int64)
+                result_cos.append(
+                    torch.gather(freqs_cos.unsqueeze(0).repeat(index.shape[0], 1, 1), dim=1, index=index)
+                )
+                result_sin.append(
+                    torch.gather(freqs_sin.unsqueeze(0).repeat(index.shape[0], 1, 1), dim=1, index=index)
+                )
+            else:
+                freqs = freqs.to(ids.device)
+                index = ids[:, :, i : i + 1].repeat(1, 1, freqs.shape[-1]).to(torch.int64)
+                result.append(torch.gather(freqs.unsqueeze(0).repeat(index.shape[0], 1, 1), dim=1, index=index))
+        if result_cos:
+            return (
+                torch.cat(result_cos, dim=-1).to(device),
+                torch.cat(result_sin, dim=-1).to(device),
+            )
         return torch.cat(result, dim=-1).to(device)
 
     def forward(
@@ -477,23 +514,26 @@ class OmniGen2RotaryPosEmbed(nn.Module):
 
         # Get combined rotary embeddings
         freqs_cis = self._get_freqs_cis(freqs_cis, position_ids)
-        
-        # create separate rotary embeddings for captions and images
-        cap_freqs_cis = torch.zeros(
-            batch_size, encoder_seq_len, freqs_cis.shape[-1], device=device, dtype=freqs_cis.dtype
-        )
-        ref_img_freqs_cis = torch.zeros(
-            batch_size, max_ref_img_len, freqs_cis.shape[-1], device=device, dtype=freqs_cis.dtype
-        )
-        img_freqs_cis = torch.zeros(
-            batch_size, max_img_len, freqs_cis.shape[-1], device=device, dtype=freqs_cis.dtype
-        )
-
-        for i, (cap_seq_len, ref_img_len, img_len, seq_len) in enumerate(zip(l_effective_cap_len, l_effective_ref_img_len, l_effective_img_len, seq_lengths)):
-            cap_freqs_cis[i, :cap_seq_len] = freqs_cis[i, :cap_seq_len]
-            ref_img_freqs_cis[i, :sum(ref_img_len)] = freqs_cis[i, cap_seq_len:cap_seq_len + sum(ref_img_len)]
-            img_freqs_cis[i, :img_len] = freqs_cis[i, cap_seq_len + sum(ref_img_len):cap_seq_len + sum(ref_img_len) + img_len]
-
+        # The original code materialized separate caption/ref/image rotary tensors here.
+        # They are currently unused by the caller, so keep the old branch commented out
+        # while returning the combined embeddings directly for both CUDA and NPU paths.
+        #
+        # cap_freqs_cis = torch.zeros(
+        #     batch_size, encoder_seq_len, freqs_cis.shape[-1], device=device, dtype=freqs_cis.dtype
+        # )
+        # ref_img_freqs_cis = torch.zeros(
+        #     batch_size, max_ref_img_len, freqs_cis.shape[-1], device=device, dtype=freqs_cis.dtype
+        # )
+        # img_freqs_cis = torch.zeros(
+        #     batch_size, max_img_len, freqs_cis.shape[-1], device=device, dtype=freqs_cis.dtype
+        # )
+        #
+        # for i, (cap_seq_len, ref_img_len, img_len, seq_len) in enumerate(
+        #     zip(l_effective_cap_len, l_effective_ref_img_len, l_effective_img_len, seq_lengths)
+        # ):
+        #     cap_freqs_cis[i, :cap_seq_len] = freqs_cis[i, :cap_seq_len]
+        #     ref_img_freqs_cis[i, :sum(ref_img_len)] = freqs_cis[i, cap_seq_len:cap_seq_len + sum(ref_img_len)]
+        #     img_freqs_cis[i, :img_len] = freqs_cis[i, cap_seq_len + sum(ref_img_len):cap_seq_len + sum(ref_img_len) + img_len]
         return freqs_cis
         # return (
         #     cap_freqs_cis,
@@ -526,8 +566,17 @@ def apply_rotary_emb(
     """
     if use_real:
         cos, sin = freqs_cis  # [S, D]
-        cos = cos[None, None]
-        sin = sin[None, None]
+        # Original broadcast path kept for reference; it assumes [S, D] rotary tensors.
+        # cos = cos[None, None]
+        # sin = sin[None, None]
+        if cos.ndim == 2:
+            cos = cos[None, None]
+            sin = sin[None, None]
+        elif cos.ndim == 3:
+            cos = cos[:, None]
+            sin = sin[:, None]
+        else:
+            raise ValueError(f"Unexpected rotary tensor rank for real RoPE: {cos.ndim}")
         cos, sin = cos.to(x.device), sin.to(x.device)
 
         if use_real_unbind_dim == -1:
