@@ -1,3 +1,7 @@
+---
+license: mit
+---
+
 # Ming-flash-omni 2.0
 
 <p align="center">
