@@ -36,3 +36,30 @@ __pycache__/
 build/*
 dist/*
 ming_sdk.egg-info/*
+
+# Local tooling and caches
+.cache/
+.codex
+.hf-cache/
+
+# Model artifacts and generated outputs
+models/
+quantized/
+generated_imgs/
+generated_audios/
+kernel_meta/
+log/
+profiles/
+analysis/
+extra-info/
+data/calib/
+dit_calib/
+msAgent/
+
+# Profiling, reports, and local experiment outputs
+*.log
+*.html
+*.npy
+fusion_result.json
+original_eval_20_zh.json
+quantized_eval_20_zh.json

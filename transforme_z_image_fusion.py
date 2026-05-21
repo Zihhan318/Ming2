@@ -18,7 +18,6 @@
 
 import math
 import time
-from contextlib import nullcontext
 from typing import List, Optional, Tuple
 
 import torch
@@ -56,7 +55,7 @@ class TimestepEmbedder(nn.Module):                                              
 
     @staticmethod                                                                    # 时间步编码的核心，把标量时间步变成一串 cos/sin 特征      
     def timestep_embedding(t, dim, max_period=10000):                                   # 定义一个函数，把时间步 t 编码成一个长度为 dim 的向量
-        with nullcontext():                                                              # 保持纯实数计算，避免 torch_npu 走到错误的 cuda autocast 初始化
+        with torch.amp.autocast("cuda", enabled=False):                                 # 显示关闭 CUDA autocast
             half = dim // 2                                                             # 把维度 dim 分成两半。 前一半留给 cos，后一半留给 sin
             freqs = torch.exp(                                                          # 取指数 【最终得到的频率按对数尺度递减：前面的维度频率高，后面的频率维度低】
                 -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=t.device) / half        # arange/half: 生成[0,1)按固定步长增加的序列。再乘以频率的对数
@@ -154,7 +153,29 @@ class ZSingleStreamAttnProcessor:
 
         # Apply RoPE
         def apply_rotary_emb(x_in: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:          # 旋转位置编码
-            with nullcontext():
+            @torch.amp.autocast("npu", enabled=False)
+            def rope_apply(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
+                cos = freqs[..., 0]
+                sin = freqs[..., 1]
+                if cos.ndim == 3:
+                    cos = cos[0]
+                    sin = sin[0]
+                if cos.ndim == 2 and cos.shape[-1] * 2 == x.shape[-1]:
+                    cos = cos.repeat_interleave(2, dim=-1)
+                    sin = sin.repeat_interleave(2, dim=-1)
+                return rotary_position_embedding(
+                    x,
+                    cos,
+                    sin,
+                    rotated_mode="rotated_interleaved",
+                    head_first=False,
+                    fused=True,
+                )
+
+            if rotary_position_embedding is not None and x_in.device.type == "npu":
+                return rope_apply(x_in, freqs_cis)
+
+            with torch.amp.autocast("cuda", enabled=False):
                 # Keep this path real-valued for Ascend/NPU compatibility.
                 # The original complex64 formulation is mathematically equivalent,
                 # but indexing complex tensors triggers unsupported kernels on torch_npu.
@@ -164,6 +185,13 @@ class ZSingleStreamAttnProcessor:
                 x_rotated = torch.stack((-x_parts[..., 1], x_parts[..., 0]), dim=-1)                        # 将最后一维的[x1,x2]旋转成[-x2,x1]
                 x_out = (x_parts * cos + x_rotated * sin).flatten(3)                                        # RoPE 的标准实数计算公式
                 return x_out.type_as(x_in)                                                                  # 将计算完的 float32 张量重新转换回输入时的数据类型（例如 float16）
+            
+        @torch.amp.autocast('npu', enabled=False)
+        def rope_apply(x, grid_sizes, freqs_list):
+            cos, sin = freqs_list[0]
+            return rotary_position_embedding(x, cos, sin, rotated_mode="rotated_interleaved", fused=True)
+
+
 
         sync_profile_device()
         rope_start = time.perf_counter() if profile_parts is not None else None

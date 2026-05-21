@@ -33,7 +33,6 @@ from diffusers import (
     FlowMatchEulerDiscreteScheduler,
 )
 #from .sd3_transformer import SD3Transformer2DModel
-from .transformer_z_image import ZImageTransformer2DModel
 from .pipeline_z_image import ZImagePipeline
 import torch.nn.functional as F
 import torch.nn as nn
@@ -41,6 +40,26 @@ import torch.nn as nn
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def resolve_zimage_transformer_cls():
+    impl = os.environ.get("MING_ZIMAGE_TRANSFORMER_IMPL", "profile").strip().lower()
+    if impl == "profile":
+        from .transformer_z_image import ZImageTransformer2DModel
+
+        return ZImageTransformer2DModel
+    if impl == "noprof":
+        from .transformer_z_image_noprof import ZImageTransformer2DModel
+
+        return ZImageTransformer2DModel
+    if impl == "fusion":
+        from .transformer_z_image_fusion import ZImageTransformer2DModel
+
+        return ZImageTransformer2DModel
+    raise ValueError(
+        "Unsupported MING_ZIMAGE_TRANSFORMER_IMPL value: "
+        f"{impl!r}. Expected 'profile', 'noprof' or 'fusion'."
+    )
 
 class ToClipMLP(nn.Module):                                 # 由两个线性层组成的MLP(多层感知机). LayerNorm:用于多模态对齐（比如把图像特征对齐到文本特征），以及特征流向下一个模块时数据分布一致
     def __init__(self, input_dim, output_dim):
@@ -143,7 +162,9 @@ class ZImageLoss(torch.nn.Module):
         # self.vae.to(self.torch_type).to(self.device)
         self.vae.requires_grad_(False)                  # 冻结 VAE 的参数，确保在训练过程中不会更新 VAE 的权重，这样可以节省显存和计算资源，同时也保持 VAE 的预训练能力不受干扰
 
-        self.train_model = ZImageTransformer2DModel.from_pretrained(        # 从预训练模型中加载 Transformer 模块，路径由 model_path 和子文件夹 "transformer" 指定，权重的数据类型由 torch_dtype 指定
+        transformer_cls = resolve_zimage_transformer_cls()
+        logger.info("loading diffusion transformer implementation: %s", transformer_cls.__module__)
+        self.train_model = transformer_cls.from_pretrained(        # 从预训练模型中加载 Transformer 模块，路径由 model_path 和子文件夹 "transformer" 指定，权重的数据类型由 torch_dtype 指定
             model_path, subfolder="transformer",
             torch_dtype=torch_dtype,
         )
@@ -190,11 +211,12 @@ class ZImageLoss(torch.nn.Module):
         logger.info(f"number of all Diffusion parameters: {num_parameters}, trainable: {num_parameters_trainable}")
     
 
-    def sample(self, encoder_hidden_states, steps=20, cfg=7.0, image_cfg=1.0, cfg_mode=1, seed=42, height=512, width=512, use_dynamic_shifting=False, extra_vit_input=None, ref_x=None, negative_encoder_hidden_states=None):       # 这个方法用于根据输入的 encoder_hidden_states（通常是从文本或图像提取的特征）进行图像采样生成。参数包括：
+    def sample(self, encoder_hidden_states, steps=20, cfg=7.0, image_cfg=1.0, cfg_mode=1, seed=42, height=512, width=512, use_dynamic_shifting=False, extra_vit_input=None, ref_x=None, negative_encoder_hidden_states=None, profile_transformer_layers=False):       # 这个方法用于根据输入的 encoder_hidden_states（通常是从文本或图像提取的特征）进行图像采样生成。参数包括：
         
         encoder_hidden_states = list(encoder_hidden_states.unbind(dim=0))           # 首先将输入的 encoder_hidden_states 在第 0 维（Batch 维度）上拆分成一个个单独的张量，变成一个列表。每个元素都是一个样本的特征表示，方便后续逐个处理
         self.dit_total = 0.0                                                        # 初始化一个属性 dit_total，用于记录 DIT（Diffusion Inference Time，扩散推理时间）的总和，初始值为 0.0。这个属性可能会在后续的采样过程中被更新，用于统计整个采样过程中的平均推理时间
         self.vae_total = 0.0                                                        # 初始化一个属性 vae_total，用于记录 VAE（Variational Autoencoder，变分自编码器）的总和，初始值为 0.0。这个属性可能会在后续的采样过程中被更新，用于统计整个采样过程中的平均 VAE 处理时间
+        self.ming_profile = {}
 
         pipeline_output = self.pipelines(                                           # 调用 ZImagePipeline 的 __call__ 方法，进行图像生成采样。传入的参数包括：
             prompt_embeds=encoder_hidden_states,                                    # 输入的特征表示，已经被拆成了单个样本的列表，每个元素都是一个样本的特征张量，这些特征通常是从文本或图像提取出来的，用于指导生成过程
@@ -210,10 +232,12 @@ class ZImageLoss(torch.nn.Module):
             device=self.device,                                                     # 指定设备，确保所有的计算都在同一个设备上进行，避免跨设备的数据传输带来的性能损失和错误
             #extra_vit_input=extra_vit_input,   
             ref_hidden_states=ref_x,                                                # 参考图像的隐藏状态，如果提供了这个参数，生成过程可能会利用这些参考特征来引导生成，产生更符合参考图像风格或内容的结果
+            profile_transformer_layers=profile_transformer_layers,
             #use_dynamic_shifting=use_dynamic_shifting
         )
 
         image = pipeline_output.images                                                                    # 从管道的输出中提取生成的图像，通常是一个 PIL Image 对象或一个张量，具体取决于 ZImagePipeline 的实现细节
+        self.ming_profile = dict(getattr(self.pipelines, "_ming_profile", {}))
         self.dit_total = getattr(self.pipelines, "_ming_profile", {}).get("dit_total", 0.0)               # 从管道的性能分析配置（_ming_profile）中提取 DIT（Diffusion Inference Time，扩散推理时间）的总和，如果没有这个配置项，则默认为 0.0。这个值可能是在采样过程中通过某种性能分析工具（比如 Ming）记录的，用于统计整个采样过程中的平均推理时间
         self.vae_total = getattr(self.pipelines, "_ming_profile", {}).get("vae_total", 0.0)               # 从管道的性能分析配置（_ming_profile）中提取 VAE（Variational Autoencoder，变分自编码器）的总和，如果没有这个配置项，则默认为 0.0。这个值可能是在采样过程中通过某种性能分析工具（比如 Ming）记录的，用于统计整个采样过程中的平均 VAE 处理时间
 

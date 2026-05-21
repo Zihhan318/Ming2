@@ -737,7 +737,7 @@ class BailingMoeV2Gate(nn.Module):
             delta_bias = (distribution.mean() - distribution).sign()
         self.expert_bias.data = self.expert_bias.data + self.bias_update_coeff * delta_bias
 
-    def group_limited_topk(
+    def group_limited_topk(                                                                                 # 把一个物理节点（机器或芯片上）的专家分为几个组，限制每个token只能把自己的请求发往少数几个组，降低底层网络通信开销
         self,
         scores: torch.Tensor,
     ):
@@ -811,10 +811,10 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         )
 
     def forward(self, hidden_states, image_mask, audio_mask):
-        identity = hidden_states
-        bsz, seq_len, h = hidden_states.shape
-        if self.router_type == "MultiRouter":
-            if image_mask is not None:
+        identity = hidden_states                                                                                    # 保存一份原始输入，用于后面的残差连接或“共享专家”
+        bsz, seq_len, h = hidden_states.shape                                                                       # 提取 Batch Size, 序列长度, 隐藏层维度
+        if self.router_type == "MultiRouter":                                                                       # 如果开启了多路由模式，模型会针对不同的模态进行特殊处理：
+            if image_mask is not None:                                                                              # 确保传入的 image_mask 和 audio_mask 的形状是规范的（最终变成 [bsz, seq_len, 1]）
                 if len(image_mask.shape) == 3:
                     assert image_mask.shape[-1] == 1
                 elif len(image_mask.shape) == 2:
@@ -833,11 +833,11 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
                     print('audio mask shape, sum', audio_mask.shape, audio_mask.sum())
                     assert False
             if image_mask is not None and audio_mask is not None:
-                assert torch.logical_and(image_mask, audio_mask).sum() == 0
+                assert torch.logical_and(image_mask, audio_mask).sum() == 0                                         # 互斥检查：一个 Token 不可能既是图像又是音频
             
-            image_topk_idx, image_topk_weight, image_router_logits = self.image_gate(hidden_states)
-            audio_topk_idx, audio_topk_weight, audio_router_logits = self.audio_gate(hidden_states)
-            topk_idx, topk_weight, router_logits = self.gate(hidden_states)
+            image_topk_idx, image_topk_weight, image_router_logits = self.image_gate(hidden_states)                 # 不管当前 Token 是什么模态，模型直接让 三个独立的 Router（图像调度员、音频调度员、文本/默认调度员）都对所有的 hidden_states 进行计算
+            audio_topk_idx, audio_topk_weight, audio_router_logits = self.audio_gate(hidden_states)                
+            topk_idx, topk_weight, router_logits = self.gate(hidden_states)                                         # 每个调度员都会选出自己认为最合适的专家（topk_idx），并给出权重（topk_weight）和原始打分（router_logits）
 
             if image_mask is not None:
                 image_mask = image_mask.view(-1, 1)

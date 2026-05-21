@@ -14,7 +14,9 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import torch
 from transformers import AutoProcessor
 
+from dit_quant_runtime import load_quantized_dit_weights
 from modeling_bailingmm2 import BailingMM2NativeForConditionalGeneration
+from test_infer_npu import load_quantized_llm_weights, log_stage, parse_device_ids, set_runtime_device
 
 
 def configure_npu_runtime():
@@ -54,31 +56,33 @@ def get_attn_implementation(device: torch.device) -> str:
 # 音频先过audio,再过linear_proj_audio变成和文本同维度的 audio_embeds. 图像经过linear_proj后变成和文本同维度的image_embeds. 文本直接过word_embeddings. 这些模块最后都会变成同一个hidden_size 空间里的表示，再送进LLM主干去统一推理
 # LLM主干层平均切到其他卡
 
-def build_imagegen_device_map(num_layers: int, num_devices: int):
+def build_imagegen_device_map(num_layers: int, device_ids: list[int], device_type: str):
+    num_devices = len(device_ids)
     if num_devices <= 1:
         return None
 
     llm_devices = num_devices - 1
     device_map = {}
     layer_boundaries = [round(i * num_layers / llm_devices) - 1 for i in range(1, llm_devices + 1)]     # 计算每个设备负责的层范围边界
+    primary_device = f"{device_type}:{device_ids[0]}"
     for i in range(num_layers):
         device_id = bisect_left(layer_boundaries, i) + 1                                                # 用二分查找判断第i层落在哪个边界区间里，归属哪个设备。设备编号从1开始。
         if device_id > llm_devices:                                                                     # 兜底：万一卡号越界了，就用求余数的方式强行把层发出去
             device_id = i % llm_devices + 1
-        device_map[f"model.model.layers.{i}"] = device_id                                               # 把结果写进字典里
+        device_map[f"model.model.layers.{i}"] = f"{device_type}:{device_ids[device_id]}"               # 把结果写进字典里
 
     # Reserve device 0 for vision, heads and image-gen modules.
-    device_map["vision"] = 0                                                                            # 视觉模块 
-    device_map["audio"] = 0                                                                             # 音频模块
-    device_map["linear_proj"] = 0
-    device_map["linear_proj_audio"] = 0
-    device_map["model.model.word_embeddings"] = 0                                                       # 入口：文字转向量 （词嵌入）
-    device_map["model.model.word_embeddings.weight"] = 0
-    device_map["model.model.norm"] = 0
-    device_map["model.model.norm.weight"] = 0
-    device_map["model.lm_head"] = 0                                                                     # 出口：向量转文字 （输出头）
-    device_map["model.lm_head.weight"] = 0
-    device_map[f"model.model.layers.{num_layers - 1}"] = 0                                              # 把最后一层（索引为 num_layers - 1）抓回0卡 （所以0卡需要等其他几张卡跑完收尾）
+    device_map["vision"] = primary_device                                                               # 视觉模块
+    device_map["audio"] = primary_device                                                                # 音频模块
+    device_map["linear_proj"] = primary_device
+    device_map["linear_proj_audio"] = primary_device
+    device_map["model.model.word_embeddings"] = primary_device                                          # 入口：文字转向量 （词嵌入）
+    device_map["model.model.word_embeddings.weight"] = primary_device
+    device_map["model.model.norm"] = primary_device
+    device_map["model.model.norm.weight"] = primary_device
+    device_map["model.lm_head"] = primary_device                                                        # 出口：向量转文字 （输出头）
+    device_map["model.lm_head.weight"] = primary_device
+    device_map[f"model.model.layers.{num_layers - 1}"] = primary_device                                 # 把最后一层抓回首卡
     return device_map                                                                                   # model.model.layers.{i}即Transformer / MoE 层，也就是LLM主干层
 
 
@@ -151,6 +155,23 @@ def parse_args():                                                               
     parser.add_argument("--output", default="generated_imgs/output.png")                                  # 结果存在哪
     parser.add_argument("--seed", type=int, default=42)                                                   # 设置随机数种子，默认值为42
     parser.add_argument("--tensor-parallel-devices", type=int, default=1)                                 # 张量并行参数，需要是整数，若无输入默认用0卡。但实际我们在build_imagegen_device_map执行的是Pipeline Parallelism（流水线并行/层切分）
+    parser.add_argument("--device-ids")
+    parser.add_argument("--quantized-llm-path")
+    parser.add_argument("--quantized-dit-path")
+    parser.add_argument("--quant-debug-module")
+    parser.add_argument(
+        "--condition-input",
+        help="Optional .pt path with cached condition_embeds / negative_condition_embeds for DiT-only validation.",
+    )
+    parser.add_argument(
+        "--extract-condition-only",
+        action="store_true",
+        help="Extract image-generation condition embeddings only and skip image sampling.",
+    )
+    parser.add_argument(
+        "--condition-output",
+        help="Optional .pt path to save extracted condition embeddings.",
+    )
     parser.add_argument(
         "--num-runs",                                                                                     # 在同一个程序里连续跑几次生图任务。默认 4 次：1 次 skip，1 次 warmup，2 次 active
         type=int,
@@ -158,8 +179,32 @@ def parse_args():                                                               
         help="Number of consecutive generate() runs to execute in the same process.",
     )
     parser.add_argument(
+        "--internal-profile-run",
+        type=int,
+        default=0,
+        help="1-based run index to print internal image_gen_stage timings for. 0 means the last run.",
+    )
+    parser.add_argument(
         "--profile-output",                                                                               # 性能分析的开关：若传了目录路径，程序就会启动Ascend PyTorch Profiler
         help="Optional output directory for a single-step Ascend PyTorch Profiler trace.",
+    )
+    parser.add_argument(
+        "--profile-scope",
+        choices=("generate", "llm", "dit"),
+        default="generate",
+        help="Profiler scope. 'llm' profiles image condition extraction only; 'dit' profiles transformer calls only.",
+    )
+    parser.add_argument(
+        "--dit-impl",
+        choices=("profile", "noprof", "fusion"),
+        default="profile",
+        help="Select the diffusion transformer implementation. Use 'fusion' for the NPU RoPE fusion test path.",
+    )
+    parser.add_argument(
+        "--imagegen-stage-timing",
+        choices=("on", "off"),
+        default="on",
+        help="Enable or disable outer image generation stage timing in modeling_bailingmm2.py and pipeline_z_image.py.",
     )
 
     # profiler的时间控制台：
@@ -247,9 +292,17 @@ def build_output_path(base_output: str, run_idx: int, num_runs: int) -> Path:   
 def run_imagegen(args):
     if args.num_runs < 1:                                                                                    # 检查参数合法性
         raise ValueError("--num-runs must be at least 1.")
+    if args.internal_profile_run < 0 or args.internal_profile_run > args.num_runs:
+        raise ValueError(
+            f"--internal-profile-run must be between 0 and num_runs ({args.num_runs})."
+        )
     if args.profile_skip_first < 0 or args.profile_warmup_runs < 0 or args.profile_active_runs < 0:
         raise ValueError("Profiler schedule values must be non-negative.")
-    if args.profile_output and (args.profile_skip_first + args.profile_warmup_runs + args.profile_active_runs > args.num_runs):
+    if (
+        args.profile_output
+        and args.profile_scope in {"generate", "llm"}
+        and (args.profile_skip_first + args.profile_warmup_runs + args.profile_active_runs > args.num_runs)
+    ):
         raise ValueError(
             "Profiler schedule exceeds total runs: "
             f"skip_first({args.profile_skip_first}) + warmup({args.profile_warmup_runs}) + "
@@ -264,67 +317,162 @@ def run_imagegen(args):
         stage_timings[stage_name] = time.time() - start_time                                                 # 计算每一步花了多久
 
     overall_start_time = time.time()
+    os.environ["MING_ZIMAGE_TRANSFORMER_IMPL"] = args.dit_impl
+    os.environ["MING_IMAGEGEN_STAGE_TIMING"] = "1" if args.imagegen_stage_timing == "on" else "0"
+    if args.quant_debug_module:
+        os.environ["MING_DIT_QUANT_DEBUG_MODULE"] = args.quant_debug_module
+    else:
+        os.environ.pop("MING_DIT_QUANT_DEBUG_MODULE", None)
 
     stage_start = time.time()
     ensure_local_hf_cache()                                                                                  # 确保HuggingFace 的模型缓存路径是对的
     configure_npu_runtime()                                                                                  # 针对npu的核心设置，比如设置 jit_compile=False 或内存申请策略
     asset_info = validate_imagegen_assets(args.model_path)
     reference_image = validate_reference_image(args.image)
+    use_condition_input = args.condition_input is not None
     device = get_runtime_device()
     attn_implementation = get_attn_implementation(device)                                                    # 选择注意力实现。在 NPU 上，它通常会尝试使用 FlashAttention 来提速
-    use_device_map = args.tensor_parallel_devices and args.tensor_parallel_devices > 1                       # 如果 args.tensor_parallel_devices 有值且值>1 ，则 use_device_map 为true ，后续进行层切分
+    use_device_map = (not use_condition_input) and args.tensor_parallel_devices and args.tensor_parallel_devices > 1                       # 如果 args.tensor_parallel_devices 有值且值>1 ，则 use_device_map 为true ，后续进行层切分
     device_map = None
+    requested_device_ids = parse_device_ids(args.device_ids, args.tensor_parallel_devices)
+    tp_device_ids = requested_device_ids
     if use_device_map:
-        device_map = build_imagegen_device_map(num_layers=32, num_devices=args.tensor_parallel_devices)      # 指定模型总共有32层，按照 build_imagegen_device_map 指定的方式去切分
+        if tp_device_ids is None:
+            tp_device_ids = list(range(args.tensor_parallel_devices))
+        device = torch.device(f"{device.type}:{tp_device_ids[0]}")
+        set_runtime_device(device)
+        device_map = build_imagegen_device_map(
+            num_layers=32,
+            device_ids=tp_device_ids,
+            device_type=device.type,
+        )
+    elif requested_device_ids:
+        device = torch.device(f"{device.type}:{requested_device_ids[0]}")
+        set_runtime_device(device)
     mark_stage("setup", stage_start)
 
     print(f"mode: {'edit' if reference_image else 'text-to-image'}")                                         # 将配置参数打印在终端
     print(f"runtime_device: {device}")
     print(f"attn_implementation: {attn_implementation}")
     print(f"tensor_parallel_devices: {args.tensor_parallel_devices}")
+    print(f"device_ids: {tp_device_ids or requested_device_ids}")
     print(f"num_runs: {args.num_runs}")
     print(f"dit_type: {asset_info['dit_type']}")
+    print(f"dit_impl: {args.dit_impl}")
+    print(f"profile_scope: {args.profile_scope}")
+    print(f"imagegen_stage_timing: {args.imagegen_stage_timing}")
+    print(f"quantized_llm_path: {args.quantized_llm_path}")
     if reference_image is not None:
         print(f"reference_image: {reference_image}")
 
     stage_start = time.time()                                                                                # 开始计时
+    model_load_kwargs = dict(
+        torch_dtype=torch.bfloat16,
+        attn_implementation=attn_implementation,
+        load_image_gen=True,
+        load_talker=False,
+        device_map=device_map,
+    )
+    if use_condition_input:
+        model_load_kwargs.update(
+            load_vlm=False,
+            load_vision=False,
+            load_audio=False,
+            device_map=None,
+        )
     model = BailingMM2NativeForConditionalGeneration.from_pretrained(                                        # 从 args.model_path 加载一个带图像生成能力的预训练模型，并按指定配置初始化
         args.model_path,
-        torch_dtype=torch.bfloat16,                                                                          # 昇腾 NPU 最喜欢bfloat16（BF16）格式，它比 float16（FP16）动态范围更广，不容易出现数值溢出
-        attn_implementation=attn_implementation,                                                             # 如果是flash_attention，NPU 会调用专门优化的算子；如果是 sdpa，则是标准算子
-        load_image_gen=True,                                                                                 # 只生图
-        load_talker=False,                                                                                   # 关掉语音模块
-        device_map=device_map,
+        **model_load_kwargs,
     )
     if not use_device_map:                                                                                   # 单卡模式则把模型送到指定的device （通常是npu:0）
         model = model.to(device=device, dtype=torch.bfloat16)
     else:
         model = model.to(dtype=torch.bfloat16)                                                               # 多卡模式只转换数据类型
+    if args.quantized_llm_path:
+        log_stage("applying quantized llm weights for image generation")
+        replaced = load_quantized_llm_weights(
+            model,
+            Path(args.quantized_llm_path).resolve(),
+            device,
+        )
+        log_stage(f"quantized llm ready replaced_layers={replaced}")
+    if args.quantized_dit_path:
+        log_stage("applying quantized dit weights for image generation")
+        replaced = load_quantized_dit_weights(
+            model,
+            Path(args.quantized_dit_path).resolve(),
+            device,
+        )
+        log_stage(f"quantized dit ready replaced_layers={replaced}")
     model.eval()                                                                                             # 把模型设置为评估模式，会关闭掉那些只有训练时才需要的“随机干扰项”
     mark_stage("model_load", stage_start)                                                                    # model_load: 调用前面的 mark_stage 函数，记录下从 from_pretrained 开始到 model.eval() 结束总共花了多少秒。
 
     stage_start = time.time()
-    processor = AutoProcessor.from_pretrained(args.code_path, trust_remote_code=True)                        # AutoProcessor：通用翻译官。包含了 Image Processor（图片预处理器）和 Tokenizer（文本分词器）
-    messages = build_messages(args)                                                                          # 构建对话模版
+    if use_condition_input:
+        condition_payload = torch.load(args.condition_input, map_location="cpu")
+        inputs = {
+            "image_gen_condition_embeds": condition_payload["condition_embeds"].to(device=device, dtype=torch.bfloat16),
+            "image_gen_negative_condition_embeds": condition_payload["negative_condition_embeds"].to(device=device, dtype=torch.bfloat16),
+        }
+        print(f"condition_input: {args.condition_input}")
+        print(f"condition_embeds_shape: {tuple(condition_payload['condition_embeds'].shape)}")
+        print(f"negative_condition_embeds_shape: {tuple(condition_payload['negative_condition_embeds'].shape)}")
+    else:
+        processor = AutoProcessor.from_pretrained(args.code_path, trust_remote_code=True)                        # AutoProcessor：通用翻译官。包含了 Image Processor（图片预处理器）和 Tokenizer（文本分词器）
+        messages = build_messages(args)                                                                          # 构建对话模版
 
-    text = processor.apply_chat_template(messages, add_generation_prompt=True)                               # 把原始的对话列表（Role: Human, Content: ...）套入特定的模板中 （模型训练时见过特定的格式）
-    image_inputs, _, _ = processor.process_vision_info(messages)                                             # 处理 messages 里的普通图片信息 （把图片像素转成 NPU 认识的四维张量 [Batch, Channel, Height, Width]）
-    ref_image_inputs = processor.process_reference_vision_info(messages) if args.image else None             # 如果传入了--image参数（即args.image为真）才执行，调用专门的 process_reference_vision_info 函数处理
+        text = processor.apply_chat_template(messages, add_generation_prompt=True)                               # 把原始的对话列表（Role: Human, Content: ...）套入特定的模板中 （模型训练时见过特定的格式）
+        image_inputs, _, _ = processor.process_vision_info(messages)                                             # 处理 messages 里的普通图片信息 （把图片像素转成 NPU 认识的四维张量 [Batch, Channel, Height, Width]）
+        ref_image_inputs = processor.process_reference_vision_info(messages) if args.image else None             # 如果传入了--image参数（即args.image为真）才执行，调用专门的 process_reference_vision_info 函数处理
 
-    inputs = processor(                                                                                      # 统一封装
-        text=[text],                                                                                         # 包装好的文本 Token 序列
-        images=image_inputs,                                                                                 # 处理过的视觉张量
-        return_tensors="pt",                                                                                 # 要求返回 PyTorch 格式的 Tensor
-        image_gen_ref_images=ref_image_inputs,                                                               # 如果是编辑模式，带上参考图张量
-    )
-    # The processor derives image_gen_text from the chat-formatted prompt, which can
-    # collapse to an empty string for plain text prompts without quoted substrings.
-    # Override it with the original user prompt so the ByT5 text-conditioning path
-    # receives the actual prompt content.
-    inputs["image_gen_text"] = [args.prompt]                                                                 # 将“prompt”强行塞入inputs字典
-    input_device = torch.device("npu:0") if use_device_map else device                                       # 多卡模式强制指定npu:0接收原始输入（Vision/Text Embedding）
-    inputs = move_inputs_to_device(inputs, input_device)                                                     # 将inputs字典里所有Tensor从系统内存（RAM）拷贝到 NPU 显存里 （吃PCle带宽）
+        inputs = processor(                                                                                      # 统一封装
+            text=[text],                                                                                         # 包装好的文本 Token 序列
+            images=image_inputs,                                                                                 # 处理过的视觉张量
+            return_tensors="pt",                                                                                 # 要求返回 PyTorch 格式的 Tensor
+            image_gen_ref_images=ref_image_inputs,                                                               # 如果是编辑模式，带上参考图张量
+        )
+        # The processor derives image_gen_text from the chat-formatted prompt, which can
+        # collapse to an empty string for plain text prompts without quoted substrings.
+        # Override it with the original user prompt so the ByT5 text-conditioning path
+        # receives the actual prompt content.
+        inputs["image_gen_text"] = [args.prompt]                                                                 # 将“prompt”强行塞入inputs字典
+        input_device = torch.device(f"{device.type}:{tp_device_ids[0]}") if use_device_map else device          # 多卡模式强制指定首卡接收原始输入
+        inputs = move_inputs_to_device(inputs, input_device)                                                     # 将inputs字典里所有Tensor从系统内存（RAM）拷贝到 NPU 显存里 （吃PCle带宽）
     mark_stage("input_prepare", stage_start)                                                                 # 记录名称：input_prepare 阶段的耗时
+
+    if args.extract_condition_only:
+        stage_start = time.time()
+        with torch.no_grad():
+            condition_embeds, negative_condition_embeds = model.generate(
+                **inputs,
+                image_gen=True,
+                image_gen_seed=args.seed,
+                image_gen_only_extract_hidden_states=True,
+                image_gen_profile_print=False,
+            )
+        mark_stage("generate", stage_start)
+        stage_timings["save_output"] = 0.0
+        condition_payload = {
+            "prompt": args.prompt,
+            "seed": args.seed,
+            "runtime_device": str(device),
+            "device_ids": tp_device_ids or requested_device_ids,
+            "quantized_llm_path": args.quantized_llm_path,
+            "quantized_dit_path": args.quantized_dit_path,
+            "condition_embeds": condition_embeds.detach().float().cpu(),
+            "negative_condition_embeds": negative_condition_embeds.detach().float().cpu(),
+        }
+        if args.condition_output:
+            output_path = Path(args.condition_output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(condition_payload, output_path)
+            print(f"condition_output: {output_path}")
+        print(f"condition_embeds_shape: {tuple(condition_embeds.shape)}")
+        print(f"negative_condition_embeds_shape: {tuple(negative_condition_embeds.shape)}")
+        mark_stage("overall", overall_start_time)
+        for stage_name, elapsed in stage_timings.items():
+            print(f"{stage_name}: {elapsed:.2f}s")
+        return
 
     # 原来的实现保留，不直接删除。
     # stage_start = time.time()
@@ -352,8 +500,31 @@ def run_imagegen(args):
     stage_start = time.time()
     generated_images = []
     count = args.num_runs
+    internal_profile_run_idx = args.internal_profile_run - 1 if args.internal_profile_run > 0 else count - 1
+    profile_condition_kwargs = {}
 
-    if args.profile_output:
+    if args.profile_output and args.profile_scope == "dit":
+        print("precomputing image generation condition embeddings outside profiler")
+        condition_embeds, negative_condition_embeds = model.generate(
+            **inputs,
+            image_gen=True,
+            image_gen_seed=args.seed,
+            image_gen_only_extract_hidden_states=True,
+            image_gen_profile_print=False,
+        )
+        profile_condition_kwargs = {
+            "image_gen_condition_embeds": condition_embeds,
+            "image_gen_negative_condition_embeds": negative_condition_embeds,
+        }
+        os.environ["MING_DIT_PROFILE_OUTPUT"] = args.profile_output
+        os.environ["MING_DIT_PROFILE_WAIT"] = str(args.profile_skip_first)
+        os.environ["MING_DIT_PROFILE_WARMUP"] = str(args.profile_warmup_runs)
+        os.environ["MING_DIT_PROFILE_ACTIVE"] = str(args.profile_active_runs)
+        os.environ["MING_DIT_PROFILE_LEVEL"] = str(args.profile_level)
+    else:
+        os.environ.pop("MING_DIT_PROFILE_OUTPUT", None)
+
+    if args.profile_output and args.profile_scope in {"generate", "llm"}:
         try:
             import torch_npu
         except ImportError as exc:
@@ -391,14 +562,26 @@ def run_imagegen(args):
             for run_idx in range(count):
                 run_start = time.time()
                 with torch.no_grad():
-                    image = model.generate(
-                        **inputs,
-                        image_gen=True,
-                        image_gen_seed=args.seed,
-                    )
+                    if args.profile_scope == "llm":
+                        image = model.generate(
+                            **inputs,
+                            image_gen=True,
+                            image_gen_seed=args.seed,
+                            image_gen_only_extract_hidden_states=True,
+                            image_gen_profile_print=(run_idx == internal_profile_run_idx),
+                        )
+                    else:
+                        image = model.generate(
+                            **inputs,
+                            image_gen=True,
+                            image_gen_seed=args.seed,
+                            image_gen_profile_print=(run_idx == internal_profile_run_idx),
+                            **profile_condition_kwargs,
+                        )
                 prof.step()
                 run_timings.append(time.time() - run_start)
-                generated_images.append((run_idx, image))
+                if args.profile_scope != "llm":
+                    generated_images.append((run_idx, image))
     else:
         for run_idx in range(count):
             run_start = time.time()
@@ -407,6 +590,8 @@ def run_imagegen(args):
                     **inputs,
                     image_gen=True,
                     image_gen_seed=args.seed,
+                    image_gen_profile_print=(run_idx == internal_profile_run_idx),
+                    **profile_condition_kwargs,
                 )
             run_timings.append(time.time() - run_start)
             generated_images.append((run_idx, image))
@@ -424,6 +609,7 @@ def run_imagegen(args):
     print(f"device_map: {device_map}")
     print(f"attn_implementation: {attn_implementation}")
     print(f"mode: {'edit' if reference_image else 'text-to-image'}")
+    print(f"internal_profile_run: {internal_profile_run_idx + 1}/{count}")
     print(f"stage_setup: {stage_timings['setup']:.2f}s")
     print(f"stage_model_load: {stage_timings['model_load']:.2f}s")
     print(f"stage_input_prepare: {stage_timings['input_prepare']:.2f}s")

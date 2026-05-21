@@ -1,0 +1,55 @@
+apiversion: multimodal_sd_modelslim_v1
+metadata:
+  config_id: ming_zimage_dit_w8a8_ffn_stage1_itersmooth
+  score: 0.95
+  verified_model_types:
+    - Ming-ZImage-DiT
+  label:
+    w_bit: 8
+    a_bit: 8
+    is_sparse: false
+    kv_cache: false
+
+spec:
+  process:
+    - type: "iter_smooth"
+      alpha: 0.5
+      scale_min: 1e-5
+      symmetric: true
+      enable_subgraph_type:
+        - "norm-linear"
+      include:
+        - "layers.*.ffn_norm1"
+    - type: "linear_quant"
+      qconfig:
+        act:
+          scope: "per_tensor"
+          dtype: "int8"
+          symmetric: true
+          method: "minmax"
+        weight:
+          scope: "per_channel"
+          dtype: "int8"
+          symmetric: true
+          method: "minmax"
+      include:
+        - "layers.*.feed_forward.w1"
+        - "layers.*.feed_forward.w3"
+
+  save:
+    - type: "mindie_format_saver"
+      part_file_size: 0
+
+  multimodal_sd_config:
+    dump_config:
+      capture_mode: "args"
+      dump_data_dir: ""
+    model_config:
+      conditions_dir: "dit_calib/conditions_v1_tp8/conditions"
+      seed: 42
+      steps: 30
+      height: 1024
+      width: 1024
+      max_cases: 2
+      torch_dtype: "bfloat16"
+      dit_impl: "profile"

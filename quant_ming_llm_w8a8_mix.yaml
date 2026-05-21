@@ -1,0 +1,20 @@
+apiversion: modelslim_v0
+metadata:
+  config_id: ming-flash-omni-2.0-llm-w8a8-mix
+  score: 90
+  verified_model_types:
+    - Ming-flash-omni-2.0
+    - Ming-flash-omni-2.0-LLM
+  label:
+    w_bit: 8
+    a_bit: 8
+    is_sparse: False
+    kv_cache: False
+spec:
+  calib_cfg:
+    w_bit: 8
+    a_bit: 8
+    mm_tensor: False
+  calib_dataset: data/calib/mix_calib.jsonl
+  calib_save_params:
+    part_file_size: 4

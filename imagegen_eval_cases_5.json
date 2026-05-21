@@ -1,0 +1,23 @@
+[
+  {
+    "id": "01_cake_food_photo",
+    "prompt": "一张清新自然的草莓奶油蛋糕美食摄影，白色陶瓷盘，柔和自然光，写实风格。"
+  },
+  {
+    "id": "02_cyberpunk_night_city",
+    "prompt": "雨夜中的赛博朋克城市街道，霓虹灯反射在潮湿路面上，远处有悬浮广告牌和行人剪影，电影感。"
+  },
+  {
+    "id": "03_portrait_film_photo",
+    "prompt": "一位短发年轻女性站在窗边，下午逆光，胶片摄影质感，肤色自然，背景虚化，写实人像。"
+  },
+  {
+    "id": "05_chinese_ink_bamboo",
+    "prompt": "中国水墨画风格的竹林与小鸟，留白克制，墨色层次丰富，具有古典东方美感。"
+  },
+  {
+    "id": "10_cake_edit",
+    "image": "/home/zzh/Ming2/figures/cases/cake.jpg",
+    "prompt": "把蛋糕点缀得更精致，增加更多草莓切片和薄荷叶，保持写实美食摄影风格。"
+  }
+]

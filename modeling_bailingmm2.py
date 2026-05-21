@@ -33,6 +33,11 @@ logger = logging.get_logger(__name__)
 _CONFIG_FOR_DOC = "BailingMM2Config"
 
 
+def _is_imagegen_stage_timing_enabled() -> bool:
+    value = os.environ.get("MING_IMAGEGEN_STAGE_TIMING", "1").strip().lower()
+    return value not in {"0", "false", "off", "no"}
+
+
 def _resolve_runtime_device(device=None) -> torch.device:
     if isinstance(device, torch.device):
         return device
@@ -81,11 +86,16 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
     def __init__(
         self,
         config: BailingMM2Config,
-        empty_load=False, 
+        empty_load=False,
+        load_vision=True,
+        load_audio=True,
     ):
         super().__init__(config)
         self.config: BailingMM2Config = config
         self.vision = None
+        self.audio = None
+        self.linear_proj = None
+        self.linear_proj_audio = None
 
         self.llm_dytpe = torch.bfloat16
 
@@ -93,11 +103,10 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             self.model = None
             return
 
-        if self.config.vision_config:
+        if self.config.vision_config and load_vision:
             self.vision = Qwen3MoeVisionTransformer(self.config.vision_config)
 
-        self.audio = None
-        if self.config.audio_config:
+        if self.config.audio_config and load_audio:
             try:
                 from modeling_whisper_encoder import WhisperAudioEncoder
             except ImportError:
@@ -111,11 +120,12 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
 
         self.model = BailingMoeV2ForCausalLM(self.config.llm_config)
 
-        mlp_modules_img = [nn.Linear(self.vision.image_emb_dim, self.model.config.hidden_size)]
-        for _ in range(1, self.config.mlp_depth):
-            mlp_modules_img.append(nn.GELU())
-            mlp_modules_img.append(nn.Linear(self.model.config.hidden_size, self.model.config.hidden_size))
-        self.linear_proj = nn.Sequential(*mlp_modules_img)
+        if self.vision is not None:
+            mlp_modules_img = [nn.Linear(self.vision.image_emb_dim, self.model.config.hidden_size)]
+            for _ in range(1, self.config.mlp_depth):
+                mlp_modules_img.append(nn.GELU())
+                mlp_modules_img.append(nn.Linear(self.model.config.hidden_size, self.model.config.hidden_size))
+            self.linear_proj = nn.Sequential(*mlp_modules_img)
 
         if self.audio:
             audio_encoder_proj = torch.nn.Conv1d(
@@ -140,6 +150,11 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
 
 
     def extract_image_feature(self, pixel_values, grid_thw):
+        if self.vision is None or self.linear_proj is None:
+            raise ImportError(
+                "Image inputs require the vision encoder. "
+                "Reload the model with load_vision=True before running image inference."
+            )
         with _autocast_context(_infer_autocast_device_type(self), dtype=torch.bfloat16):
             if self.vision.use_deepstack:
                 image_embeds, deepstack_features = self.vision(pixel_values, grid_thw=grid_thw)
@@ -167,7 +182,69 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             audio_embeds = F.normalize(audio_embeds, dim=2)  # [-1, 256, 2048]
         return audio_embeds.to(audio_feats.dtype), audio_embeds_lengths
 
-        
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        pixel_values_videos: Optional[torch.FloatTensor] = None,
+        audio_feats: Optional[torch.FloatTensor] = None,
+        audio_feats_lengths: Optional[torch.LongTensor] = None,
+        audio_placeholder_loc_lens: Optional[torch.LongTensor] = None,
+        image_grid_thw: Optional[torch.LongTensor] = None,
+        video_grid_thw: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.Tensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        output_router_logits: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        second_per_grid_ts: Optional[torch.Tensor] = None,
+        num_logits_to_keep: Optional[int] = 0,
+        **kwargs,
+    ):
+        image_embeds = None
+        video_embeds = None
+        audio_embeds = None
+        audio_embeds_lens = None
+
+        if pixel_values is not None:
+            image_embeds = self.extract_image_feature(pixel_values, grid_thw=image_grid_thw)
+        if pixel_values_videos is not None:
+            video_embeds = self.extract_image_feature(pixel_values_videos, grid_thw=video_grid_thw)
+        if audio_feats is not None:
+            audio_embeds, audio_embeds_lens = self.extract_audio_feature(
+                audio_feats,
+                audio_feats_lengths,
+            )
+
+        return self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            query_embeds_image=image_embeds,
+            query_embeds_video=video_embeds,
+            query_embeds_audio=audio_embeds,
+            query_embeds_audio_lengths=audio_embeds_lens,
+            placeholder_audio_loc_lens=audio_placeholder_loc_lens,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            image_grid_thw=image_grid_thw,
+            image_grid_thw_video=video_grid_thw,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            output_router_logits=output_router_logits,
+            return_dict=return_dict,
+            second_per_grid_ts=second_per_grid_ts,
+            num_logits_to_keep=num_logits_to_keep,
+            **kwargs,
+        )
+
     @torch.no_grad()
     def generate(
         self,
@@ -204,17 +281,23 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
         image_gen_condition_embeds=None,
         image_gen_negative_condition_embeds=None,
         image_gen_return_batch=False,
+        image_gen_profile_print: bool = True,
         **generate_kwargs,
     ):
         image_embeds, video_embeds, audio_embeds, audio_embeds_lengths = None, None, None, None
 
         if image_gen:
+            stage_profile_enabled = _is_imagegen_stage_timing_enabled()
             image_gen_stage_timings = {}
 
             def mark_image_gen_stage(stage_name: str, start_time: float):
+                if not stage_profile_enabled:
+                    return
                 image_gen_stage_timings[stage_name] = time.time() - start_time
 
             def sync_device():
+                if not stage_profile_enabled:
+                    return
                 if hasattr(torch, "npu") and torch.npu.is_available():
                     torch.npu.synchronize()
                 elif torch.cuda.is_available():
@@ -379,64 +462,123 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 "cfg_mode": image_gen_cfg_mode,
                 "ref_x": image_gen_pixel_values_reference,
             }
-            print("encoder_hidden_states.shape: ", condition_embeds.shape)
-            print("image_gen_seed: ", image_gen_seed)
-            print("image_gen_cfg: ", image_gen_cfg)
-            print("image_gen_image_cfg: ", image_gen_image_cfg)
-            print("image_gen_steps: ", image_gen_steps)
-            print("image_gen_height: ", image_gen_height)
-            print("image_gen_width: ", image_gen_width)
-            print("image_gen_text: ", image_gen_text)
-            print("condition_embeds.shape: ", condition_embeds.shape)
-            print("image_gen_output_resize_height: ", image_gen_output_resize_height)
-            print("image_gen_output_resize_width: ", image_gen_output_resize_width)
+            if image_gen_profile_print and stage_profile_enabled:
+                print("encoder_hidden_states.shape: ", condition_embeds.shape)
+                print("image_gen_seed: ", image_gen_seed)
+                print("image_gen_cfg: ", image_gen_cfg)
+                print("image_gen_image_cfg: ", image_gen_image_cfg)
+                print("image_gen_steps: ", image_gen_steps)
+                print("image_gen_height: ", image_gen_height)
+                print("image_gen_width: ", image_gen_width)
+                print("image_gen_text: ", image_gen_text)
+                print("condition_embeds.shape: ", condition_embeds.shape)
+                print("image_gen_output_resize_height: ", image_gen_output_resize_height)
+                print("image_gen_output_resize_width: ", image_gen_output_resize_width)
             
             stage_start = time.time()
             image = self.diffusion_loss.sample(
                 **sample_kwargs,
+                profile_transformer_layers=image_gen_profile_print,
             )
             mark_image_gen_stage("diffusion_sample", stage_start)
-            image_gen_stage_timings["dit_total"] = getattr(self.diffusion_loss, "dit_total", 0.0)
-            image_gen_stage_timings["vae_total"] = getattr(self.diffusion_loss, "vae_total", 0.0)
+            if stage_profile_enabled:
+                image_gen_substage_timings = getattr(self.diffusion_loss, "ming_profile", {})
+                for stage_name in (
+                    "patchify_and_embed",
+                    "image_branch_total",
+                    "text_branch_total",
+                    "unified_total",
+                    "unified_prepare",
+                    "transformer_blocks_main",
+                    "transformer_attention_total",
+                    "transformer_ffn_total",
+                    "qkv_proj_total",
+                    "q_proj_total",
+                    "k_proj_total",
+                    "v_proj_total",
+                    "qk_norm_total",
+                    "rope_total",
+                    "attention_core_total",
+                    "out_proj_total",
+                    "decode_total",
+                ):
+                    image_gen_stage_timings[stage_name] = image_gen_substage_timings.get(stage_name, 0.0)
+                image_gen_stage_timings["transformer_blocks_layer_times"] = list(
+                    image_gen_substage_timings.get("transformer_blocks_layer_times", [])
+                )
+                image_gen_stage_timings["dit_total"] = getattr(self.diffusion_loss, "dit_total", 0.0)
+                image_gen_stage_timings["vae_total"] = getattr(self.diffusion_loss, "vae_total", 0.0)
 
             stage_start = time.time()
             image = [i.resize((w, h), Image.LANCZOS) for i, w, h in zip(image, image_gen_output_resize_width, image_gen_output_resize_height)]
             mark_image_gen_stage("post_resize", stage_start)
 
-            sync_device()
-            image_gen_stage_timings["total_image_gen"] = time.perf_counter() - image_gen_overall_start
-            image_gen_stage_timings["modules_total"] = (
-                image_gen_stage_timings.get("llm_condition_total", 0.0)
-                + image_gen_stage_timings.get("dit_total", 0.0)
-                + image_gen_stage_timings.get("vae_total", 0.0)
-            )
-            image_gen_stage_timings["other_total"] = (
-                image_gen_stage_timings["total_image_gen"]
-                - image_gen_stage_timings["modules_total"]
-            )
+            if stage_profile_enabled:
+                sync_device()
+                image_gen_stage_timings["total_image_gen"] = time.perf_counter() - image_gen_overall_start
+                image_gen_stage_timings["modules_total"] = (
+                    image_gen_stage_timings.get("llm_condition_total", 0.0)
+                    + image_gen_stage_timings.get("dit_total", 0.0)
+                    + image_gen_stage_timings.get("vae_total", 0.0)
+                )
+                image_gen_stage_timings["other_total"] = (
+                    image_gen_stage_timings["total_image_gen"]
+                    - image_gen_stage_timings["modules_total"]
+                )
 
-            total_image_gen = max(image_gen_stage_timings["total_image_gen"], 1e-12)
-            print(
-                f"image_gen_stage_llm_condition_total: {image_gen_stage_timings['llm_condition_total']:.2f}s "
-                f"({image_gen_stage_timings['llm_condition_total'] / total_image_gen * 100:.2f}%)"
-            )
-            print(
-                f"image_gen_stage_dit_total: {image_gen_stage_timings['dit_total']:.2f}s "
-                f"({image_gen_stage_timings['dit_total'] / total_image_gen * 100:.2f}%)"
-            )
-            print(
-                f"image_gen_stage_vae_total: {image_gen_stage_timings['vae_total']:.2f}s "
-                f"({image_gen_stage_timings['vae_total'] / total_image_gen * 100:.2f}%)"
-            )
-            print(
-                f"image_gen_stage_modules_total: {image_gen_stage_timings['modules_total']:.2f}s "
-                f"({image_gen_stage_timings['modules_total'] / total_image_gen * 100:.2f}%)"
-            )
-            print(
-                f"image_gen_stage_other_total: {image_gen_stage_timings['other_total']:.2f}s "
-                f"({image_gen_stage_timings['other_total'] / total_image_gen * 100:.2f}%)"
-            )
-            print(f"image_gen_stage_total: {image_gen_stage_timings['total_image_gen']:.2f}s")
+                total_image_gen = max(image_gen_stage_timings["total_image_gen"], 1e-12)
+                if image_gen_profile_print:
+                    print(
+                        f"image_gen_stage_llm_condition_total: {image_gen_stage_timings['llm_condition_total']:.2f}s "
+                        f"({image_gen_stage_timings['llm_condition_total'] / total_image_gen * 100:.2f}%)"
+                    )
+                    print(
+                        f"image_gen_stage_dit_total: {image_gen_stage_timings['dit_total']:.2f}s "
+                        f"({image_gen_stage_timings['dit_total'] / total_image_gen * 100:.2f}%)"
+                    )
+                    for stage_name in (
+                        "patchify_and_embed",
+                        "image_branch_total",
+                        "text_branch_total",
+                        "unified_total",
+                        "unified_prepare",
+                        "transformer_blocks_main",
+                        "transformer_attention_total",
+                        "transformer_ffn_total",
+                        "qkv_proj_total",
+                        "q_proj_total",
+                        "k_proj_total",
+                        "v_proj_total",
+                        "qk_norm_total",
+                        "rope_total",
+                        "attention_core_total",
+                        "out_proj_total",
+                        "decode_total",
+                    ):
+                        print(
+                            f"image_gen_stage_{stage_name}: {image_gen_stage_timings[stage_name]:.2f}s "
+                            f"({image_gen_stage_timings[stage_name] / total_image_gen * 100:.2f}%)"
+                        )
+                    layer_times = image_gen_stage_timings.get("transformer_blocks_layer_times", [])
+                    if layer_times:
+                        for layer_idx, layer_time in enumerate(layer_times):
+                            print(
+                                f"image_gen_stage_transformer_block_{layer_idx:02d}: {layer_time:.2f}s "
+                                f"({layer_time / total_image_gen * 100:.2f}%)"
+                            )
+                    print(
+                        f"image_gen_stage_vae_total: {image_gen_stage_timings['vae_total']:.2f}s "
+                        f"({image_gen_stage_timings['vae_total'] / total_image_gen * 100:.2f}%)"
+                    )
+                    print(
+                        f"image_gen_stage_modules_total: {image_gen_stage_timings['modules_total']:.2f}s "
+                        f"({image_gen_stage_timings['modules_total'] / total_image_gen * 100:.2f}%)"
+                    )
+                    print(
+                        f"image_gen_stage_other_total: {image_gen_stage_timings['other_total']:.2f}s "
+                        f"({image_gen_stage_timings['other_total'] / total_image_gen * 100:.2f}%)"
+                    )
+                    print(f"image_gen_stage_total: {image_gen_stage_timings['total_image_gen']:.2f}s")
 
             if not image_gen_return_batch and len(image) == 1:
                 image = image[0]
@@ -683,6 +825,9 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
         *model_args,
         **kwargs,
     ):
+        load_multimodal = kwargs.pop("load_multimodal", True)
+        load_vision = kwargs.pop("load_vision", load_multimodal)
+        load_audio = kwargs.pop("load_audio", load_multimodal)
         load_image_gen = False
         if "load_image_gen" in kwargs:
             load_image_gen = kwargs["load_image_gen"]
@@ -707,12 +852,16 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             model = super().from_pretrained(
                 pretrained_model_name_or_path,
                 *model_args,
+                load_vision=load_vision,
+                load_audio=load_audio,
                 **kwargs,
             )
         else:
             model = cls(
                 BailingMM2Config.from_dict(BailingMM2Config.get_config_dict(pretrained_model_name_or_path)[0]),
                 empty_load=True,
+                load_vision=load_vision,
+                load_audio=load_audio,
             )
         if load_image_gen:
             model.load_image_gen_modules(

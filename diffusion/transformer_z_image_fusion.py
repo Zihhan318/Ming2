@@ -36,6 +36,11 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 #from .attention_dispatch import dispatch_attention_fn
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
+try:
+    from mindiesd import rotary_position_embedding
+except ImportError:
+    rotary_position_embedding = None
+
 
 ADALN_EMBED_DIM = 256
 SEQ_MULTI_OF = 32
@@ -154,6 +159,28 @@ class ZSingleStreamAttnProcessor:
 
         # Apply RoPE
         def apply_rotary_emb(x_in: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:          # 旋转位置编码
+            @torch.amp.autocast("npu", enabled=False)
+            def rope_apply(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
+                cos = freqs[..., 0]
+                sin = freqs[..., 1]
+                if cos.ndim == 3:
+                    cos = cos[0]
+                    sin = sin[0]
+                if cos.ndim == 2 and cos.shape[-1] * 2 == x.shape[-1]:
+                    cos = cos.repeat_interleave(2, dim=-1)
+                    sin = sin.repeat_interleave(2, dim=-1)
+                return rotary_position_embedding(
+                    x,
+                    cos,
+                    sin,
+                    rotated_mode="rotated_interleaved",
+                    head_first=False,
+                    fused=True,
+                )
+
+            if rotary_position_embedding is not None and x_in.device.type == "npu":
+                return rope_apply(x_in, freqs_cis)
+
             with nullcontext():
                 # Keep this path real-valued for Ascend/NPU compatibility.
                 # The original complex64 formulation is mathematically equivalent,

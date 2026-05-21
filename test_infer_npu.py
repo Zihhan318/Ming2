@@ -1,4 +1,6 @@
 import argparse
+import gc
+import json
 import os
 import sys
 import time
@@ -11,7 +13,14 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True")
 
 import torch
+import torch.nn.functional as F
 import transformers.modeling_utils as modeling_utils
+from accelerate.hooks import add_hook_to_module, remove_hook_from_module
+from safetensors import safe_open
+from msmodelslim.pytorch.llm_ptq.llm_ptq_tools import QuantConfig
+from msmodelslim.pytorch.llm_ptq.llm_ptq_tools.timestep.manager import TimestepManager
+from msmodelslim.pytorch.llm_ptq.llm_ptq_tools.timestep.quantizer import LinearQuantizerTimestep
+from msmodelslim.pytorch.llm_ptq.llm_ptq_tools.timestep.timestep_utils import load_quant_weight
 from transformers import AutoProcessor
 
 from configuration_bailingmm2 import BailingMM2Config
@@ -80,7 +89,7 @@ def set_runtime_device(device: torch.device):
         torch.cuda.set_device(device)
 
 
-def build_layer_split_device_map(num_layers: int, device_ids: list[int]):
+def build_layer_split_device_map(num_layers: int, device_ids: list[int], device_type: str):
     num_devices = len(device_ids)
     if num_devices < 1:
         raise ValueError(f"Expected at least one device, got {num_devices=}")
@@ -88,15 +97,17 @@ def build_layer_split_device_map(num_layers: int, device_ids: list[int]):
         raise ValueError(f"Expected num_devices <= num_layers, got {num_layers=} {num_devices=}")
 
     device_map = {}
-    base_layers = num_layers // num_devices
-    extra_layers = num_layers % num_devices
-    layer_idx = 0
-    primary_device = device_ids[0]
-    for index, device_id in enumerate(device_ids):
-        layer_count = base_layers + (1 if index < extra_layers else 0)
-        for _ in range(layer_count):
-            device_map[f"model.model.layers.{layer_idx}"] = device_id
-            layer_idx += 1
+    layer_boundaries = [
+        ((idx + 1) * num_layers) // num_devices
+        for idx in range(num_devices)
+    ]
+    primary_device = f"{device_type}:{device_ids[0]}"
+    for layer_idx in range(num_layers):
+        device_slot = 0
+        while device_slot < len(layer_boundaries) and layer_idx >= layer_boundaries[device_slot]:
+            device_slot += 1
+        target_device = f"{device_type}:{device_ids[min(device_slot, num_devices - 1)]}"
+        device_map[f"model.model.layers.{layer_idx}"] = target_device
 
     device_map["vision"] = primary_device
     device_map["audio"] = primary_device
@@ -108,6 +119,7 @@ def build_layer_split_device_map(num_layers: int, device_ids: list[int]):
     device_map["model.model.norm.weight"] = primary_device
     device_map["model.lm_head"] = primary_device
     device_map["model.lm_head.weight"] = primary_device
+    device_map[f"model.model.layers.{num_layers - 1}"] = primary_device
     return device_map
 
 
@@ -120,6 +132,205 @@ def move_inputs_to_device(inputs, device: torch.device):
         else:
             inputs[key] = value.to(device=device)
     return inputs
+
+
+def build_quantized_llm_cfg(model_quant_type: str) -> QuantConfig:
+    quant_type_upper = model_quant_type.upper()
+    if quant_type_upper == "W8A8":
+        w_bit, a_bit = 8, 8
+    elif quant_type_upper == "W8A16":
+        w_bit, a_bit = 8, 16
+    else:
+        raise ValueError(f"Unsupported quantized LLM type: {model_quant_type}")
+    cfg = QuantConfig(w_bit=w_bit, a_bit=a_bit, mm_tensor=False)
+    cfg.use_timestep_quant = True
+    cfg.max_dynamic_step = 0
+    return cfg
+
+
+class W8A16LinearRuntime(torch.nn.Module):
+    def __init__(self, linear: torch.nn.Module):
+        super().__init__()
+        self.target_device = linear.weight.device
+        self.target_dtype = linear.weight.dtype
+        if linear.bias is None:
+            self.register_buffer("bias", None, persistent=False)
+        else:
+            self.register_buffer("bias", linear.bias.detach().to(self.target_device, dtype=self.target_dtype))
+        self.register_buffer("deq_weight", torch.empty(0, device="cpu", dtype=self.target_dtype), persistent=False)
+
+    def load_layer_params(self, params_to_load: dict[str, torch.Tensor], device: torch.device):
+        required_keys = ["weight", "weight_scale", "weight_offset"]
+        missing_keys = [key for key in required_keys if key not in params_to_load]
+        if missing_keys:
+            raise KeyError(f"Required keys {missing_keys} not found in state_dict")
+
+        quant_weight = params_to_load["weight"].to(device=device, dtype=torch.float32)
+        weight_scale = params_to_load["weight_scale"].to(device=device, dtype=torch.float32)
+        weight_offset = params_to_load["weight_offset"].to(device=device, dtype=torch.float32)
+
+        ori_weight_shape = quant_weight.shape
+        if len(ori_weight_shape) != 2:
+            raise ValueError("original weight shape is not valid for W8A16 runtime.")
+        if len(weight_scale.shape) != 2:
+            raise ValueError("weight_scale shape is not valid for W8A16 runtime.")
+
+        if weight_scale.shape[1] != 1:
+            channel_num = ori_weight_shape[1]
+            if weight_scale.shape[1] == 0:
+                raise ZeroDivisionError("weight_scale shape[1] is 0, please check quant params.")
+            group_size = int(channel_num / weight_scale.shape[1])
+            quant_weight = quant_weight.reshape(-1, group_size)
+            weight_offset = weight_offset.reshape(-1, 1)
+            weight_scale = weight_scale.reshape(-1, 1)
+            deq_weight = (quant_weight - weight_offset) * weight_scale
+            deq_weight = deq_weight.reshape(ori_weight_shape)
+        else:
+            deq_weight = (quant_weight - weight_offset) * weight_scale
+
+        self.deq_weight = deq_weight.to(dtype=self.target_dtype)
+
+    def forward(self, x: torch.Tensor):
+        return F.linear(x, self.deq_weight, self.bias)
+
+
+def resolve_named_module(root_module: torch.nn.Module, qualified_name: str):
+    current = root_module
+    parts = qualified_name.split(".")
+    for part in parts[:-1]:
+        current = current[int(part)] if part.isdigit() else getattr(current, part)
+    return current, parts[-1]
+
+
+def set_named_module(root_module: torch.nn.Module, qualified_name: str, new_module: torch.nn.Module):
+    parent, leaf = resolve_named_module(root_module, qualified_name)
+    if leaf.isdigit():
+        parent[int(leaf)] = new_module
+    else:
+        setattr(parent, leaf, new_module)
+
+
+def load_quantized_linear_names(quantized_llm_path: Path) -> tuple[str, set[str], dict[str, str]]:
+    quant_description = json.loads((quantized_llm_path / "quant_model_description.json").read_text())
+    model_quant_type = str(quant_description.get("model_quant_type", "W8A8")).upper()
+    index_candidates = [
+        quantized_llm_path / f"quant_model_weight_{model_quant_type.lower()}.safetensors.index.json",
+        *sorted(quantized_llm_path.glob("quant_model_weight_*.safetensors.index.json")),
+    ]
+    index_path = next((candidate for candidate in index_candidates if candidate.exists()), None)
+    if index_path is None:
+        raise FileNotFoundError(
+            f"No quantized safetensors index was found under {quantized_llm_path} for {model_quant_type}."
+        )
+    index_data = json.loads(index_path.read_text())
+    quantized_linear_names = {
+        name[: -len(".weight")]
+        for name, quant_type in quant_description.items()
+        if name.endswith(".weight") and str(quant_type).upper() == model_quant_type
+    }
+    return model_quant_type, quantized_linear_names, index_data["weight_map"]
+
+
+def replace_with_quantized_linears(
+    model: torch.nn.Module,
+    quantized_linear_names: set[str],
+    model_quant_type: str,
+) -> int:
+    quant_cfg = build_quantized_llm_cfg(model_quant_type) if model_quant_type == "W8A8" else None
+    replaced = 0
+    target_names = [
+        name
+        for name, module in model.named_modules()
+        if name in quantized_linear_names
+        and isinstance(module, (torch.nn.Linear, torch.nn.modules.linear.NonDynamicallyQuantizableLinear))
+    ]
+    for name in target_names:
+        parent, leaf = resolve_named_module(model, name)
+        module = parent[int(leaf)] if leaf.isdigit() else getattr(parent, leaf)
+        if name not in quantized_linear_names:
+            continue
+        if not isinstance(module, (torch.nn.Linear, torch.nn.modules.linear.NonDynamicallyQuantizableLinear)):
+            continue
+        if model_quant_type == "W8A16":
+            quant_module = W8A16LinearRuntime(module)
+            quant_module._target_device = module.weight.device
+        else:
+            quant_module = LinearQuantizerTimestep(cfg=quant_cfg, logger=None)
+            quant_module.set_param(module)
+            quant_module._target_device = quant_module.weight.device if quant_module.weight is not None else torch.device("cpu")
+            # Keep only small metadata on-device during weight loading; the original float
+            # matrix would otherwise double memory usage until int8 weights are installed.
+            if quant_module.weight is not None and quant_module.weight.device.type != "cpu":
+                quant_module.weight = torch.nn.Parameter(quant_module.weight.cpu(), requires_grad=False)
+            if quant_module.bias is not None and quant_module.bias.device.type != "cpu":
+                quant_module.bias = torch.nn.Parameter(quant_module.bias.cpu(), requires_grad=False)
+        if hasattr(module, "_hf_hook"):
+            add_hook_to_module(quant_module, module._hf_hook)
+            remove_hook_from_module(module)
+        # Clear old tensors explicitly before swapping the module out so their device
+        # storage can be reclaimed before quantized weights are materialized.
+        if getattr(module, "weight", None) is not None:
+            module.weight = torch.nn.Parameter(torch.empty(0), requires_grad=False)
+        if getattr(module, "bias", None) is not None:
+            module.bias = torch.nn.Parameter(torch.empty(0), requires_grad=False)
+        set_named_module(model, name, quant_module)
+        replaced += 1
+        del module
+    gc.collect()
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        torch.npu.empty_cache()
+    elif torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return replaced
+
+
+def load_quantized_llm_weights(
+    model: torch.nn.Module,
+    quantized_llm_path: Path,
+    device: torch.device,
+) -> int:
+    model_quant_type, quantized_linear_names, weight_map = load_quantized_linear_names(quantized_llm_path)
+    replaced = replace_with_quantized_linears(model, quantized_linear_names, model_quant_type)
+    if replaced == 0:
+        raise RuntimeError(f"No quantized linear modules were matched under {quantized_llm_path}.")
+    quantized_modules = {
+        name: module
+        for name, module in model.named_modules()
+        if name in quantized_linear_names and isinstance(module, (LinearQuantizerTimestep, W8A16LinearRuntime))
+    }
+    module_device_map = {
+        name: getattr(module, "_target_device", device)
+        for name, module in quantized_modules.items()
+    }
+
+    shard_names = sorted(set(weight_map.values()))
+    log_stage(f"replaced {replaced} linear layers with {model_quant_type} quantizers")
+    log_stage(f"loading quantized llm weights from {len(shard_names)} shard(s)")
+    for shard_name in shard_names:
+        shard_path = quantized_llm_path / shard_name
+        params_to_load_by_device = {}
+        params_to_load_by_module = {}
+        with safe_open(str(shard_path), framework="pt", device="cpu") as shard:
+            for tensor_name in shard.keys():
+                module_name, _, _ = tensor_name.rpartition(".")
+                if module_name not in quantized_linear_names:
+                    continue
+                target_device = module_device_map[module_name]
+                tensor = shard.get_tensor(tensor_name)
+                if model_quant_type == "W8A16":
+                    _, _, param_name = tensor_name.rpartition(".")
+                    params_to_load_by_module.setdefault(module_name, {})[param_name] = tensor
+                else:
+                    params_to_load_by_device.setdefault(target_device, {})[tensor_name] = tensor
+        if model_quant_type == "W8A16":
+            for module_name, params_to_load in params_to_load_by_module.items():
+                quantized_modules[module_name].load_layer_params(params_to_load, module_device_map[module_name])
+        else:
+            for target_device, params_to_load in params_to_load_by_device.items():
+                if params_to_load:
+                    load_quant_weight(params_to_load, model, target_device)
+    TimestepManager.set_timestep_idx(0)
+    return replaced
 
 
 def build_messages(args):
@@ -183,28 +394,48 @@ def run_infer(args):
         device_map = build_layer_split_device_map(
             num_layers=config.llm_config.num_hidden_layers,
             device_ids=tp_device_ids,
+            device_type=device.type,
         )
     elif requested_device_ids:
         device = torch.device(f"{device.type}:{requested_device_ids[0]}")
         set_runtime_device(device)
+    model_load_device_map = device_map
+    if not use_device_map and device.type != "cpu":
+        model_load_device_map = {"": str(device)}
 
     log_stage(
         f"runtime_device={device} use_device_map={use_device_map} "
         f"tp_devices={args.tensor_parallel_devices} device_ids={tp_device_ids or requested_device_ids}"
+    )
+    # Keep the full multimodal module tree loaded even for text-only prompts.
+    # The original Ming inference path assumes the complete model is present, and
+    # aggressively pruning vision/audio for text requests noticeably degrades text quality.
+    load_multimodal = True
+    log_stage(
+        f"text_only={not bool(modalities)} load_multimodal={load_multimodal} "
+        f"requested_modalities={modalities or ['text']}"
     )
     log_stage("loading model")
     model = BailingMM2NativeForConditionalGeneration.from_pretrained(
         args.model_path,
         torch_dtype=torch.bfloat16,
         attn_implementation=attn_implementation,
+        load_multimodal=load_multimodal,
         load_image_gen=False,
         load_talker=False,
-        device_map=device_map,
+        device_map=model_load_device_map,
+        low_cpu_mem_usage=True,
     )
-    if not use_device_map:
+    if model_load_device_map is None:
         model = model.to(device=device, dtype=torch.bfloat16)
-    else:
-        model = model.to(dtype=torch.bfloat16)
+    if args.quantized_llm_path:
+        log_stage("applying quantized llm weights")
+        replaced = load_quantized_llm_weights(
+            model,
+            Path(args.quantized_llm_path).resolve(),
+            device,
+        )
+        log_stage(f"quantized llm ready replaced_layers={replaced}")
     model.eval()
     log_stage("model ready")
 
@@ -242,6 +473,8 @@ def run_infer(args):
     sync_device(input_device)
     start_time = time.time()
     log_stage(f"starting generate max_new_tokens={args.max_new_tokens}")
+    if args.quantized_llm_path:
+        TimestepManager.set_timestep_idx(0)
     with torch.no_grad():
         generated_ids = model.generate(
             **inputs,
@@ -277,6 +510,7 @@ def parse_args():
     )
     parser.add_argument("--model-path", default=".")
     parser.add_argument("--code-path", default=".")
+    parser.add_argument("--quantized-llm-path")
     parser.add_argument(
         "--task",
         choices=UNDERSTANDING_TASKS,

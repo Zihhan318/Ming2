@@ -1,0 +1,99 @@
+[
+  {
+    "id": "01_cake_food_photo",
+    "prompt": "一张清新自然的草莓奶油蛋糕美食摄影，白色陶瓷盘，柔和自然光，写实风格。"
+  },
+  {
+    "id": "02_cyberpunk_night_city",
+    "prompt": "雨夜中的赛博朋克城市街道，霓虹灯反射在潮湿路面上，远处有悬浮广告牌和行人剪影，电影感。"
+  },
+  {
+    "id": "03_portrait_film_photo",
+    "prompt": "一位短发年轻女性站在窗边，下午逆光，胶片摄影质感，肤色自然，背景虚化，写实人像。"
+  },
+  {
+    "id": "04_mountain_landscape",
+    "prompt": "雪山和湖泊的广角风景摄影，清晨薄雾，天空泛蓝，湖面有倒影，画面通透宁静。"
+  },
+  {
+    "id": "05_chinese_ink_bamboo",
+    "prompt": "中国水墨画风格的竹林与小鸟，留白克制，墨色层次丰富，具有古典东方美感。"
+  },
+  {
+    "id": "06_minimal_living_room",
+    "prompt": "现代极简客厅室内设计，大面积落地窗，浅木色家具，米白色沙发，整洁克制，建筑摄影风格。"
+  },
+  {
+    "id": "07_cat_astronaut_illustration",
+    "prompt": "一只穿宇航服的橘猫站在月球表面，远处可见地球，色彩鲜明，精致数字插画风格。"
+  },
+  {
+    "id": "08_bookstore_warm_light",
+    "prompt": "一家复古旧书店的内部场景，木质书架，暖黄色灯光，空气里有灰尘颗粒感，电影布景风格。"
+  },
+  {
+    "id": "09_flower_macro_photo",
+    "prompt": "一朵盛开的白色山茶花微距摄影，花瓣边缘清晰，背景深绿色虚化，光线柔和自然。"
+  },
+  {
+    "id": "10_cake_edit",
+    "image": "/home/zzh/Ming2/figures/cases/cake.jpg",
+    "prompt": "把蛋糕点缀得更精致，增加更多草莓切片和薄荷叶，保持写实美食摄影风格。"
+  },
+  {
+    "id": "11_strawberry_tart_macro",
+    "prompt": "一枚草莓水果塔的超近景微距摄影，奶油纹理细腻，草莓籽清晰可见，浅景深，真实美食广告风格。"
+  },
+  {
+    "id": "12_croissant_butter_layers",
+    "prompt": "刚出炉羊角面包的特写摄影，酥皮层次分明，黄油光泽明显，桌面暖光，写实食物商业摄影。"
+  },
+  {
+    "id": "13_portrait_hair_detail",
+    "prompt": "一位长发女性的人像近景，发丝细节丰富，皮肤质感自然不过度磨皮，柔和侧光，真实摄影。"
+  },
+  {
+    "id": "14_male_portrait_beard_skin",
+    "prompt": "一位男性半身肖像，胡茬和皮肤毛孔细节清晰，冷暖对比光，背景虚化，写实商业摄影。"
+  },
+  {
+    "id": "15_neon_wet_crosswalk",
+    "prompt": "雨夜霓虹十字路口，地面有高饱和反射和路灯眩光，远处车辆拖影，电影级赛博朋克写实风格。"
+  },
+  {
+    "id": "16_glass_building_lines",
+    "prompt": "现代玻璃幕墙高楼仰视摄影，线条笔直锐利，反射天空和周边建筑，构图干净，建筑摄影。"
+  },
+  {
+    "id": "17_old_alley_brick_texture",
+    "prompt": "老城区窄巷，砖墙和木门纹理清晰，斜阳照出高对比阴影，纪实摄影风格。"
+  },
+  {
+    "id": "18_rose_petals_macro",
+    "prompt": "红玫瑰花瓣的微距摄影，花瓣褶皱和露珠边缘非常清晰，背景深色虚化，精致静物摄影。"
+  },
+  {
+    "id": "19_green_leaf_backlight",
+    "prompt": "逆光下的绿色叶片特写，叶脉细节清楚，边缘透光，背景柔和散景，自然生态摄影。"
+  },
+  {
+    "id": "20_black_white_architecture",
+    "prompt": "黑白建筑摄影，混凝土立面与窗框形成高对比几何边缘，线条利落，现代主义风格。"
+  },
+  {
+    "id": "21_watch_metal_reflection",
+    "prompt": "高端金属腕表产品摄影，表盘刻度与拉丝金属边缘非常清晰，冷色反射控制精致，商业棚拍风格。"
+  },
+  {
+    "id": "22_porcelain_teacup_edge",
+    "prompt": "白色瓷茶杯与茶托的静物摄影，杯口高光边缘清晰，背景柔和，质感克制，东方茶室氛围。"
+  },
+  {
+    "id": "23_city_skyline_sunset",
+    "prompt": "夕阳下的城市天际线，玻璃高楼反射橙红天空，边缘和窗格细节清晰，都市风景摄影。"
+  },
+  {
+    "id": "24_bird_feather_detail",
+    "prompt": "一只小型鸟类停在树枝上的近景摄影，羽毛层次和边缘细节明显，背景绿色虚化，野生动物摄影。"
+  }
+]

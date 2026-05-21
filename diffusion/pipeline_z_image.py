@@ -17,7 +17,10 @@
 # All rights and credit for the original implementation remain with the original authors and contributors, and this project complies with the applicable open-source license terms of the referenced repository.
 
 import inspect
+import os
+import re
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
@@ -56,6 +59,108 @@ class ZImagePipelineOutput(BaseOutput):
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+def _is_imagegen_stage_timing_enabled() -> bool:
+    value = os.environ.get("MING_IMAGEGEN_STAGE_TIMING", "1").strip().lower()
+    return value not in {"0", "false", "off", "no"}
+
+
+def _sanitize_capture_name(value: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z._-]+", "_", value.strip())
+    return cleaned or "sample"
+
+
+def _clone_capture_value(value):
+    if torch.is_tensor(value):
+        return value.detach().cpu()
+    if isinstance(value, list):
+        return [_clone_capture_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_capture_value(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _clone_capture_value(item) for key, item in value.items()}
+    return value
+
+
+def _resolve_dit_calib_capture_steps(total_steps: int) -> Optional[set[int]]:
+    output_dir = os.environ.get("MING_DIT_CALIB_OUTPUT_DIR", "").strip()
+    if not output_dir:
+        return None
+
+    raw_spec = os.environ.get("MING_DIT_CALIB_CAPTURE_STEPS", "0,last").strip()
+    if not raw_spec:
+        raw_spec = "0,last"
+
+    resolved_steps = set()
+    for part in raw_spec.split(","):
+        token = part.strip().lower()
+        if not token:
+            continue
+        if token == "last":
+            resolved_steps.add(max(total_steps - 1, 0))
+            continue
+        try:
+            step_idx = int(token)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid MING_DIT_CALIB_CAPTURE_STEPS entry: {part!r}. "
+                "Expected comma-separated integers or 'last'."
+            ) from exc
+        if step_idx < 0 or step_idx >= total_steps:
+            raise ValueError(
+                f"Capture step {step_idx} is outside valid range [0, {max(total_steps - 1, 0)}]."
+            )
+        resolved_steps.add(step_idx)
+    return resolved_steps
+
+
+def _maybe_capture_dit_calib_inputs(
+    *,
+    step_idx: int,
+    total_steps: int,
+    latents: List[torch.Tensor],
+    timestep: torch.Tensor,
+    prompt_embeds: List[torch.Tensor],
+    ref_hidden_states: Optional[List[torch.Tensor]],
+    apply_cfg: bool,
+    scheduler_timestep: torch.Tensor,
+):
+    capture_steps = _resolve_dit_calib_capture_steps(total_steps)
+    if not capture_steps or step_idx not in capture_steps:
+        return None
+
+    output_dir = Path(os.environ["MING_DIT_CALIB_OUTPUT_DIR"]).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    case_id = _sanitize_capture_name(os.environ.get("MING_DIT_CALIB_CASE_ID", f"sample_{step_idx:03d}"))
+    output_path = output_dir / f"{case_id}_step{step_idx:03d}.pt"
+    allow_overwrite = os.environ.get("MING_DIT_CALIB_ALLOW_OVERWRITE", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if output_path.exists() and not allow_overwrite:
+        return str(output_path)
+
+    payload = {
+        "metadata": {
+            "case_id": case_id,
+            "step_idx": step_idx,
+            "total_steps": total_steps,
+            "apply_cfg": apply_cfg,
+            "batch_size": len(latents),
+            "prompt_batch_size": len(prompt_embeds),
+            "has_ref_hidden_states": ref_hidden_states is not None,
+            "scheduler_timestep": _clone_capture_value(scheduler_timestep),
+        },
+        "latent_model_input": _clone_capture_value(latents),
+        "timestep_model_input": _clone_capture_value(timestep),
+        "prompt_embeds_model_input": _clone_capture_value(prompt_embeds),
+        "ref_hidden_states_input": _clone_capture_value(ref_hidden_states),
+    }
+    torch.save(payload, output_path)
+    return str(output_path)
 
 EXAMPLE_DOC_STRING = """
     Examples:
@@ -342,6 +447,7 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
         max_sequence_length: int = 512,
         device: Optional[Union[str, torch.device]] = None,
         ref_hidden_states: Optional[torch.FloatTensor] = None,
+        profile_transformer_layers: bool = False,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -436,17 +542,42 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
             )
 
         device = device or self._execution_device
+        stage_profile_enabled = _is_imagegen_stage_timing_enabled()
 
         def sync_device():
+            if not stage_profile_enabled:
+                return
             if hasattr(torch, "npu") and torch.npu.is_available():
                 torch.npu.synchronize()
             elif torch.cuda.is_available():
                 torch.cuda.synchronize()
 
-        self._ming_profile = {
-            "dit_total": 0.0,
-            "vae_total": 0.0,
-        }
+        self._ming_profile = (
+            {
+                "dit_total": 0.0,
+                "vae_total": 0.0,
+                "patchify_and_embed": 0.0,
+                "image_branch_total": 0.0,
+                "text_branch_total": 0.0,
+                "unified_total": 0.0,
+                "unified_prepare": 0.0,
+                "transformer_blocks_main": 0.0,
+                "transformer_attention_total": 0.0,
+                "transformer_ffn_total": 0.0,
+                "qkv_proj_total": 0.0,
+                "q_proj_total": 0.0,
+                "k_proj_total": 0.0,
+                "v_proj_total": 0.0,
+                "qk_norm_total": 0.0,
+                "rope_total": 0.0,
+                "attention_core_total": 0.0,
+                "out_proj_total": 0.0,
+                "transformer_blocks_layer_times": [],
+                "decode_total": 0.0,
+            }
+            if stage_profile_enabled
+            else {}
+        )
 
         self._guidance_scale = guidance_scale
         self._joint_attention_kwargs = joint_attention_kwargs
@@ -507,7 +638,8 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
             ref_hidden_states = self.vae.encode(ref_hidden_states).latent_dist.mode()
             ref_hidden_states = (ref_hidden_states - self.vae.config.shift_factor) * self.vae.config.scaling_factor
             sync_device()
-            self._ming_profile["vae_total"] += time.perf_counter() - vae_ref_start
+            if stage_profile_enabled:
+                self._ming_profile["vae_total"] += time.perf_counter() - vae_ref_start
 
 
         # Repeat prompt_embeds for num_images_per_prompt
@@ -538,6 +670,13 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
         )
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         self._num_timesteps = len(timesteps)
+        dit_profile_output = os.environ.get("MING_DIT_PROFILE_OUTPUT", "").strip()
+        dit_profile_target_step = None
+        if dit_profile_output and not getattr(self, "_ming_dit_profile_done", False):
+            # Profile only one warmed-up transformer call. This keeps MindStudio traces focused on DiT.
+            dit_profile_target_step = int(os.environ.get("MING_DIT_PROFILE_WAIT", "2")) + int(
+                os.environ.get("MING_DIT_PROFILE_WARMUP", "2")
+            )
 
         # 6. Denoising loop
         sync_device()
@@ -585,9 +724,98 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
                     ref_hidden_states_input = ref_hidden_states_input.unsqueeze(2)
                     ref_hidden_states_input = list(ref_hidden_states_input.unbind(dim=0))
 
-                model_out_list = self.transformer(
-                    latent_model_input_list, timestep_model_input, prompt_embeds_model_input, ref_hidden_states=ref_hidden_states_input, return_dict=False
-                )[0]
+                _maybe_capture_dit_calib_inputs(
+                    step_idx=i,
+                    total_steps=len(timesteps),
+                    latents=latent_model_input_list,
+                    timestep=timestep_model_input,
+                    prompt_embeds=prompt_embeds_model_input,
+                    ref_hidden_states=ref_hidden_states_input,
+                    apply_cfg=apply_cfg,
+                    scheduler_timestep=t,
+                )
+
+                if dit_profile_target_step is not None and i == dit_profile_target_step:
+                    try:
+                        import torch_npu
+                    except ImportError as exc:
+                        raise RuntimeError("torch_npu is required for DiT-only profiling.") from exc
+
+                    os.makedirs(dit_profile_output, exist_ok=True)
+                    profiler_level = {
+                        0: torch_npu.profiler.ProfilerLevel.Level0,
+                        1: torch_npu.profiler.ProfilerLevel.Level1,
+                        2: torch_npu.profiler.ProfilerLevel.Level2,
+                    }[int(os.environ.get("MING_DIT_PROFILE_LEVEL", "1"))]
+                    experimental_config = torch_npu.profiler._ExperimentalConfig(
+                        export_type=torch_npu.profiler.ExportType.Text,
+                        aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+                        profiler_level=profiler_level,
+                        l2_cache=False,
+                        data_simplification=False,
+                    )
+                    with torch_npu.profiler.profile(
+                        activities=[
+                            torch_npu.profiler.ProfilerActivity.CPU,
+                            torch_npu.profiler.ProfilerActivity.NPU,
+                        ],
+                        with_stack=True,
+                        record_shapes=True,
+                        profile_memory=True,
+                        schedule=torch_npu.profiler.schedule(wait=0, warmup=0, active=1, repeat=1),
+                        experimental_config=experimental_config,
+                        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(dit_profile_output),
+                    ) as prof:
+                        model_out_list = self.transformer(
+                            latent_model_input_list,
+                            timestep_model_input,
+                            prompt_embeds_model_input,
+                            ref_hidden_states=ref_hidden_states_input,
+                            return_dict=False,
+                            profile_transformer_layers=profile_transformer_layers,
+                        )[0]
+                        prof.step()
+                    self._ming_dit_profile_done = True
+                else:
+                    model_out_list = self.transformer(
+                        latent_model_input_list,
+                        timestep_model_input,
+                        prompt_embeds_model_input,
+                        ref_hidden_states=ref_hidden_states_input,
+                        return_dict=False,
+                        profile_transformer_layers=profile_transformer_layers,
+                    )[0]
+                transformer_profile = getattr(self.transformer, "_ming_profile", None)
+                if not transformer_profile and hasattr(self.transformer, "transformer"):
+                    transformer_profile = getattr(self.transformer.transformer, "_ming_profile", None)
+                if stage_profile_enabled and transformer_profile:
+                    for stage_name in (
+                        "patchify_and_embed",
+                        "image_branch_total",
+                        "text_branch_total",
+                        "unified_total",
+                        "unified_prepare",
+                        "transformer_blocks_main",
+                        "transformer_attention_total",
+                        "transformer_ffn_total",
+                        "qkv_proj_total",
+                        "q_proj_total",
+                        "k_proj_total",
+                        "v_proj_total",
+                        "qk_norm_total",
+                        "rope_total",
+                        "attention_core_total",
+                        "out_proj_total",
+                        "decode_total",
+                    ):
+                        self._ming_profile[stage_name] += float(transformer_profile.get(stage_name, 0.0))
+                    if profile_transformer_layers:
+                        layer_times = transformer_profile.get("transformer_blocks_layer_times", [])
+                        if layer_times:
+                            if not self._ming_profile["transformer_blocks_layer_times"]:
+                                self._ming_profile["transformer_blocks_layer_times"] = [0.0] * len(layer_times)
+                            for idx, layer_time in enumerate(layer_times):
+                                self._ming_profile["transformer_blocks_layer_times"][idx] += float(layer_time)
 
                 if apply_cfg:
                     # Perform CFG
@@ -637,7 +865,8 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
                     progress_bar.update()
 
         sync_device()
-        self._ming_profile["dit_total"] = time.perf_counter() - dit_start
+        if stage_profile_enabled:
+            self._ming_profile["dit_total"] = time.perf_counter() - dit_start
 
         if output_type == "latent":
             image = latents
@@ -651,7 +880,8 @@ class ZImagePipeline(DiffusionPipeline, ZImageLoraLoaderMixin, FromSingleFileMix
             image = self.vae.decode(latents, return_dict=False)[0]
             image = self.image_processor.postprocess(image, output_type=output_type)
             sync_device()
-            self._ming_profile["vae_total"] += time.perf_counter() - vae_start
+            if stage_profile_enabled:
+                self._ming_profile["vae_total"] += time.perf_counter() - vae_start
 
         # Offload all models
         self.maybe_free_model_hooks()
