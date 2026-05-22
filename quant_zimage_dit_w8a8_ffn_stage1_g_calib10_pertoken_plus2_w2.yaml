@@ -1,0 +1,91 @@
+apiversion: multimodal_sd_modelslim_v1
+metadata:
+  config_id: ming_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2
+  score: 0.95
+  verified_model_types:
+    - Ming-ZImage-DiT
+  label:
+    w_bit: 8
+    a_bit: 8
+    is_sparse: false
+    kv_cache: false
+
+spec:
+  process:
+    - type: "linear_quant"
+      qconfig:
+        act:
+          scope: "per_token"
+          dtype: "int8"
+          symmetric: true
+          method: "minmax"
+        weight:
+          scope: "per_channel"
+          dtype: "int8"
+          symmetric: true
+          method: "minmax"
+      include:
+        # Plus2 FFN blocks with w2 added on the same 15 low-sensitivity blocks.
+        - "layers.1.feed_forward.w1"
+        - "layers.1.feed_forward.w2"
+        - "layers.1.feed_forward.w3"
+        - "layers.2.feed_forward.w1"
+        - "layers.2.feed_forward.w2"
+        - "layers.2.feed_forward.w3"
+        - "layers.3.feed_forward.w1"
+        - "layers.3.feed_forward.w2"
+        - "layers.3.feed_forward.w3"
+        - "layers.4.feed_forward.w1"
+        - "layers.4.feed_forward.w2"
+        - "layers.4.feed_forward.w3"
+        - "layers.7.feed_forward.w1"
+        - "layers.7.feed_forward.w2"
+        - "layers.7.feed_forward.w3"
+        - "layers.10.feed_forward.w1"
+        - "layers.10.feed_forward.w2"
+        - "layers.10.feed_forward.w3"
+        - "layers.11.feed_forward.w1"
+        - "layers.11.feed_forward.w2"
+        - "layers.11.feed_forward.w3"
+        - "layers.12.feed_forward.w1"
+        - "layers.12.feed_forward.w2"
+        - "layers.12.feed_forward.w3"
+        - "layers.13.feed_forward.w1"
+        - "layers.13.feed_forward.w2"
+        - "layers.13.feed_forward.w3"
+        - "layers.24.feed_forward.w1"
+        - "layers.24.feed_forward.w2"
+        - "layers.24.feed_forward.w3"
+        - "layers.25.feed_forward.w1"
+        - "layers.25.feed_forward.w2"
+        - "layers.25.feed_forward.w3"
+        - "layers.26.feed_forward.w1"
+        - "layers.26.feed_forward.w2"
+        - "layers.26.feed_forward.w3"
+        - "layers.27.feed_forward.w1"
+        - "layers.27.feed_forward.w2"
+        - "layers.27.feed_forward.w3"
+        - "layers.28.feed_forward.w1"
+        - "layers.28.feed_forward.w2"
+        - "layers.28.feed_forward.w3"
+        - "layers.29.feed_forward.w1"
+        - "layers.29.feed_forward.w2"
+        - "layers.29.feed_forward.w3"
+
+  save:
+    - type: "mindie_format_saver"
+      part_file_size: 0
+
+  multimodal_sd_config:
+    dump_config:
+      capture_mode: "args"
+      dump_data_dir: ""
+    model_config:
+      conditions_dir: "dit_calib/conditions_v2_tp8_10cases/conditions"
+      seed: 42
+      steps: 30
+      height: 1024
+      width: 1024
+      max_cases: 10
+      torch_dtype: "bfloat16"
+      dit_impl: "profile"

@@ -269,6 +269,58 @@ Notes for NPU:
 - The attention mask is materialized to `[B, 1, S, S]` for Ascend FlashAttention compatibility, instead of relying on broadcast-only mask shapes.
 - The `talker` audio output path keeps CUDA graph acceleration on NVIDIA, but automatically falls back to eager execution on Ascend/NPU so TTS does not depend on CUDA-only graph or stream APIs.
 
+### Ascend Image Generation Optimization
+
+We maintain a set of Ascend-oriented DiT quantization configs under the repository root. The current fastest verified image-generation variant is:
+
+- Config: [quant_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2_attnout15_v_tail6.yaml](quant_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2_attnout15_v_tail6.yaml)
+- Quantized DiT path example: `/tmp/ming-flash-omni-2.0-dit-w8a8-ffn-stage1-g-calib10-pertoken-plus2-w2-attnout15-v-tail6`
+
+This optimization uses per-token `W8A8` dynamic quantization on the DiT path:
+
+- FFN quantization: `w1 + w2 + w3` on 15 low-sensitivity transformer blocks
+- Attention quantization: `to_out.0` on the same 15 blocks
+- Additional attention quantization: `to_v` on tail blocks `24-29`
+- Calibration set: 10 image-generation condition cases
+
+The main config files used in the tuning sweep are:
+
+- [quant_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2.yaml](quant_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2.yaml)
+- [quant_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2_attnout15.yaml](quant_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2_attnout15.yaml)
+- [quant_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2_attnout15_v_tail6.yaml](quant_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2_attnout15_v_tail6.yaml)
+- [quant_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2_attnout15_v_tail6_qk_tail2.yaml](quant_zimage_dit_w8a8_ffn_stage1_g_calib10_pertoken_plus2_w2_attnout15_v_tail6_qk_tail2.yaml)
+
+End-to-end NPU image generation with the fastest current quantized DiT:
+
+```shell
+python test_infer_imagegen_npu.py \
+  --model-path models/Ming-flash-omni-2.0 \
+  --code-path . \
+  --quantized-dit-path /tmp/ming-flash-omni-2.0-dit-w8a8-ffn-stage1-g-calib10-pertoken-plus2-w2-attnout15-v-tail6 \
+  --prompt "一张清新自然的草莓奶油蛋糕美食摄影，白色陶瓷盘，柔和自然光，写实风格。" \
+  --output generated_imgs/quant/pertoken_plus2_w2_attnout15_v_tail6_e2e.png \
+  --seed 42 \
+  --tensor-parallel-devices 6 \
+  --device-ids 1,2,3,4,5,6 \
+  --dit-impl fusion \
+  --num-runs 4 \
+  --internal-profile-run 4 \
+  --imagegen-stage-timing on
+```
+
+### Optimization Details
+
+Rope fusion:
+
+- The RoPE path uses the fused Ascend rotary operator when available, replacing the slower fallback implementation.
+- Measured single-op benefit: RoPE latency reduced by about `4x`.
+
+DiT quantization:
+
+- Quantization is applied only to selected low-sensitivity linear layers instead of full-model blanket quantization.
+- FFN matmul kernels show about `1.6x` single-op speedup after quantization.
+- In our current sweep, the best verified config reached `run_4_generate = 22.21s` on the fixed-condition single-card DiT benchmark path.
+
 ### Talker Audio Output on Ascend / NPU
 
 For local TTS verification on Ascend, use `test_talker_npu.py`. This keeps the original CUDA-oriented demo scripts unchanged and provides a separate NPU entry point in the same style as `test_infer_npu.py` and `test_infer_imagegen_npu.py`.
